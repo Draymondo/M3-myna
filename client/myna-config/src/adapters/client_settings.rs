@@ -93,6 +93,7 @@ impl GioClientSettings {
 impl ClientSettings for GioClientSettings {
     fn list(&self) -> Result<Vec<ClientSettingMetadata>, ClientSettingsError> {
         let mut keys = self.schema.list_keys();
+        keys.retain(|key| holds(&self.schema.key(key).value_type()));
         keys.sort();
         keys.iter().map(|key| self.metadata(key)).collect()
     }
@@ -240,6 +241,18 @@ fn value_from_variant(
         SettingRange::Choices(_) => ClientSettingValue::Choice(value),
         _ => ClientSettingValue::Text(value),
     })
+}
+
+/// Whether the page has a row for a key of this type. A newer schema can add
+/// a type this build predates; that key is left off the page, not the page.
+fn holds(kind: &glib::VariantTy) -> bool {
+    [
+        glib::VariantTy::INT32,
+        glib::VariantTy::UINT32,
+        glib::VariantTy::BOOLEAN,
+        glib::VariantTy::STRING,
+    ]
+    .contains(&kind)
 }
 
 /// The integer widths a settings row holds (`i` and `u`, the two GSettings

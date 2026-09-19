@@ -57,6 +57,31 @@ fn real_schema_source(files: &TestFiles) -> gio::SettingsSchemaSource {
     gio::SettingsSchemaSource::from_directory(&schema_dir, None, false).unwrap()
 }
 
+/// A throwaway schema under the real id, holding just `keys`.
+fn fixture_schema_source(files: &TestFiles, keys: &str) -> gio::SettingsSchemaSource {
+    let schema_dir = files.0.join("fixture-schemas");
+    std::fs::create_dir_all(&schema_dir).unwrap();
+    std::fs::write(
+        schema_dir.join("com.canonical.Myna.Dictation.gschema.xml"),
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="com.canonical.Myna.Dictation" path="/com/canonical/myna/dictation/">
+    {keys}
+  </schema>
+</schemalist>
+"#
+        ),
+    )
+    .unwrap();
+    assert!(std::process::Command::new("glib-compile-schemas")
+        .arg(&schema_dir)
+        .status()
+        .unwrap()
+        .success());
+    gio::SettingsSchemaSource::from_directory(&schema_dir, None, false).unwrap()
+}
+
 fn open_adapter(files: &TestFiles) -> GioClientSettings {
     GioClientSettings::open_with_source(
         &real_schema_source(files),
@@ -306,26 +331,11 @@ fn missing_schema_is_explicit_and_actionable() {
 #[test]
 fn signed_integer_keys_round_trip_and_wider_ones_are_refused() {
     let files = TestFiles::new("signed-integer");
-    let schema_dir = files.0.join("schemas");
-    std::fs::create_dir_all(&schema_dir).unwrap();
-    std::fs::write(
-        schema_dir.join("com.canonical.Myna.Dictation.gschema.xml"),
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<schemalist>
-  <schema id="com.canonical.Myna.Dictation" path="/com/canonical/myna/dictation/">
-    <key name="offset" type="i"><default>-2</default><range min="-10" max="10"/></key>
-    <key name="wide" type="x"><default>7</default></key>
-  </schema>
-</schemalist>
-"#,
-    )
-    .unwrap();
-    assert!(std::process::Command::new("glib-compile-schemas")
-        .arg(&schema_dir)
-        .status()
-        .unwrap()
-        .success());
-    let source = gio::SettingsSchemaSource::from_directory(&schema_dir, None, false).unwrap();
+    let source = fixture_schema_source(
+        &files,
+        r#"<key name="offset" type="i"><default>-2</default><range min="-10" max="10"/></key>
+    <key name="wide" type="x"><default>7</default></key>"#,
+    );
     let adapter =
         GioClientSettings::open_with_source(&source, files.0.join("settings/keyfile")).unwrap();
 
@@ -355,6 +365,28 @@ fn signed_integer_keys_round_trip_and_wider_ones_are_refused() {
 
     assert_eq!(ClientSettingValue::Integer(3).as_str(), None);
     assert_eq!(ClientSettingValue::Text("3".into()).as_integer(), None);
+}
+
+/// One key of a type the page cannot hold must cost that row, not the page.
+#[test]
+fn listing_skips_keys_of_a_type_the_page_cannot_hold() {
+    let files = TestFiles::new("unsupported-type");
+    let source = fixture_schema_source(
+        &files,
+        r#"<key name="offset" type="i"><default>-2</default></key>
+    <key name="on" type="b"><default>true</default></key>
+    <key name="wide" type="x"><default>7</default></key>"#,
+    );
+    let adapter =
+        GioClientSettings::open_with_source(&source, files.0.join("settings/keyfile")).unwrap();
+
+    let keys: Vec<_> = adapter
+        .list()
+        .unwrap()
+        .iter()
+        .map(|setting| setting.key().as_str().to_owned())
+        .collect();
+    assert_eq!(keys, ["offset", "on"]);
 }
 
 #[test]
