@@ -46,8 +46,6 @@ apps:
     command: bin/server.sh
     daemon: simple
     plugs:
-      - hardware-observe
-      - system-observe # ONNX Runtime reads /sys/fs/cgroup/** + /proc/** for CPU topology
       # No `process-control`: it exists only to lift seccomp's
       # sched_setaffinity filter so ORT can pin its thread pool, and ORT pins
       # only when it sizes that pool itself. This adapter caps the pool

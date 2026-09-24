@@ -60,11 +60,8 @@ apps:
     plugs:
       # Weights are a component (no runtime download), so no `network`.
       - network-bind # snapd seccomp gates listen() behind this, even for Unix sockets
-      # ONNX Runtime reads /sys/devices/system/cpu/** for core topology and
-      # /sys/fs/cgroup/** for cpuset/quota info to size its thread pool.
-      # hardware-observe covers /sys/devices/**; system-observe adds
-      # /sys/fs/cgroup/** and /proc/**.
       - hardware-observe
+      # /proc/pressure/memory, the memory-pressure monitor's PSI signal.
       - system-observe
       # The NVIDIA device nodes and the host driver's libcuda.so.1, for the
       # nvidia-gpu engine.
