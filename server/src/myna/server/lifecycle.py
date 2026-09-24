@@ -32,6 +32,7 @@ import asyncio
 import contextlib
 import ctypes
 import logging
+import os
 import resource
 import time
 from collections.abc import AsyncIterator
@@ -146,7 +147,8 @@ def _read_psi_some_avg10(path: str = "/proc/pressure/memory") -> float | None:
 def _cgroup_memory_limit_bytes() -> int | None:
     """The smallest of ``memory.high``/``memory.max`` across this process's
     own cgroup v2 scope and every ancestor slice, or ``None`` if unreadable
-    (cgroup v1, no cgroup, confinement) or nowhere limited below ``max``. A
+    (cgroup v1, no cgroup, confinement) or nowhere limited below ``max``.
+    Under a snap only the own scope is read: AppArmor denies the slices. A
     limit here is a static configuration fact, known at model-load time,
     before a single decode has run - an early prediction rather than a
     behavioural observation, which is why it's read once and cached rather
@@ -161,8 +163,9 @@ def _cgroup_memory_limit_bytes() -> int | None:
     root = Path("/sys/fs/cgroup")
     scope = root / parts[2].lstrip("/")
     limits: list[int] = []
+    top = scope.parent if os.environ.get("SNAP") else root
     p = scope
-    while p != root and p != p.parent:
+    while p != top and p != root and p != p.parent:
         for name in ("memory.high", "memory.max"):
             try:
                 text = (p / name).read_text(encoding="utf-8").strip()

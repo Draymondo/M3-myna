@@ -292,7 +292,39 @@ def test_cgroup_memory_limit_walks_ancestors_and_takes_the_minimum(tmp_path, mon
         return real_path(p, *args, **kwargs)
 
     monkeypatch.setattr(lifecycle, "Path", fake_path)
+    monkeypatch.delenv("SNAP", raising=False)
     assert lifecycle._cgroup_memory_limit_bytes() == 1024**3
+
+
+def test_cgroup_memory_limit_reads_only_its_own_scope_under_a_snap(tmp_path, monkeypatch):
+    """snapd's template grants a service its own memory.{high,max} and no
+    parent slice's, so reading those logs an AppArmor denial on every model
+    load and can never succeed."""
+    (tmp_path / "proc_self_cgroup").write_text("0::/leaf/child\n")
+    cgroup_root = tmp_path / "sys_fs_cgroup"
+    leaf, child = cgroup_root / "leaf", cgroup_root / "leaf" / "child"
+    child.mkdir(parents=True)
+    (leaf / "memory.max").write_text(f"{1024**3}\n")
+    (child / "memory.max").write_text(f"{3 * 1024**3}\n")
+    opened: list[Path] = []
+    real_path, real_read_text = Path, Path.read_text
+
+    def fake_path(p, *args, **kwargs):
+        if p == "/proc/self/cgroup":
+            return real_path(tmp_path / "proc_self_cgroup")
+        if p == "/sys/fs/cgroup":
+            return real_path(cgroup_root)
+        return real_path(p, *args, **kwargs)
+
+    def recording_read_text(self, *args, **kwargs):
+        opened.append(self)
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(lifecycle, "Path", fake_path)
+    monkeypatch.setattr(Path, "read_text", recording_read_text)
+    monkeypatch.setenv("SNAP", "/snap/myna-parakeet/x1")
+    assert lifecycle._cgroup_memory_limit_bytes() == 3 * 1024**3
+    assert not [p for p in opened if p.parent == leaf]
 
 
 def test_cgroup_memory_limit_none_when_nothing_is_limited(tmp_path, monkeypatch):
