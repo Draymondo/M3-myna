@@ -102,7 +102,7 @@ pub struct ClientRegistry {
 }
 
 impl ClientRegistry {
-    fn insert(&self, sender: String) -> u32 {
+    pub(crate) fn insert(&self, sender: String) -> u32 {
         let mut clients = self.clients.lock().expect("client registry poisoned");
         clients.insert(sender);
         let count = clients.len() as u32;
@@ -111,7 +111,7 @@ impl ClientRegistry {
         count
     }
 
-    fn remove(&self, sender: &str) -> u32 {
+    pub(crate) fn remove(&self, sender: &str) -> u32 {
         let mut clients = self.clients.lock().expect("client registry poisoned");
         clients.remove(sender);
         let count = clients.len() as u32;
@@ -120,7 +120,7 @@ impl ClientRegistry {
         count
     }
 
-    fn remove_if_present(&self, sender: &str) -> bool {
+    pub(crate) fn remove_if_present(&self, sender: &str) -> bool {
         let mut clients = self.clients.lock().expect("client registry poisoned");
         let removed = clients.remove(sender);
         if removed {
