@@ -8,11 +8,13 @@ use std::time::Duration;
 use gio::glib::{self, ControlFlow};
 
 use super::machine::{Action, Event, Machine, Note, EXIT_CANNOT_HOST};
-use super::{launch, DAEMON_BUS_NAME};
+use super::{launch, DAEMON_BUS_NAME, DAEMON_OBJECT_PATH};
 
 struct Supervisor {
     machine: Machine,
     argv: Vec<String>,
+    /// The session bus, as of the daemon's name last appearing.
+    conn: Option<gio::DBusConnection>,
     child: Option<gio::Subprocess>,
     restart: Option<glib::SourceId>,
     kill: Option<glib::SourceId>,
@@ -44,6 +46,8 @@ fn feed(shared: &Shared, event: Event) {
 
 fn perform(shared: &Shared, action: Action) {
     match action {
+        Action::Register => tell_daemon(shared, "RegisterClient"),
+        Action::Unregister => tell_daemon(shared, "UnregisterClient"),
         Action::Spawn => spawn(shared),
         Action::Terminate => {
             if let Some(child) = &shared.borrow().child {
@@ -91,6 +95,31 @@ fn perform(shared: &Shared, action: Action) {
         Action::Log(Note::Dormant) => {
             log("the HUD keeps failing; giving up until the daemon restarts")
         }
+    }
+}
+
+/// Say it to the daemon and wait for its answer: the registration must be on
+/// the daemon's books before the HUD starts, and the host may be exiting. The
+/// daemon has just appeared (or we are leaving), so the call returns at once;
+/// the limit only bounds a wedged daemon, and a failure costs nothing but the
+/// early registration, since the HUD registers itself in the end.
+fn tell_daemon(shared: &Shared, method: &str) {
+    let Some(conn) = shared.borrow().conn.clone() else {
+        return;
+    };
+    let result = conn.call_sync(
+        Some(DAEMON_BUS_NAME),
+        DAEMON_OBJECT_PATH,
+        DAEMON_BUS_NAME,
+        method,
+        None,
+        None,
+        gio::DBusCallFlags::NONE,
+        2000,
+        None::<&gio::Cancellable>,
+    );
+    if let Err(error) = result {
+        log(&format!("{method} failed: {error}"));
     }
 }
 
@@ -153,6 +182,7 @@ pub fn run() -> i32 {
             None => Machine::new(),
         },
         argv,
+        conn: None,
         child: None,
         restart: None,
         kill: None,
@@ -167,8 +197,9 @@ pub fn run() -> i32 {
         gio::BusType::Session,
         DAEMON_BUS_NAME,
         gio::BusNameWatcherFlags::NONE,
-        move |_, _, _| {
+        move |conn, _, _| {
             if !owned.borrow().quitting {
+                owned.borrow_mut().conn = Some(conn);
                 feed(&owned, Event::NameOwned);
             }
         },
@@ -190,7 +221,7 @@ pub fn run() -> i32 {
 /// Stop the HUD and leave.
 fn end(shared: &Shared) {
     shared.borrow_mut().quitting = true;
-    feed(shared, Event::NameLost);
+    feed(shared, Event::Shutdown);
 }
 
 /// End with the session's X display. A logout leaves the lingering user

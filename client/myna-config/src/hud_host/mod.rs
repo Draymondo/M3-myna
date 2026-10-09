@@ -10,3 +10,5 @@ pub mod run;
 
 /// The daemon's well-known bus name (`myna-desktop/src/dbus`).
 pub const DAEMON_BUS_NAME: &str = "com.canonical.Myna.Dictation";
+/// Where it serves its interface of the same name.
+pub const DAEMON_OBJECT_PATH: &str = "/com/canonical/Myna/Dictation";

@@ -20,11 +20,114 @@ impl Drop for Killer {
     }
 }
 
+const IFACE_XML: &str = "<node><interface name='com.canonical.Myna.Dictation'>\
+    <method name='RegisterClient'><arg type='u' direction='out'/></method>\
+    <method name='UnregisterClient'><arg type='u' direction='out'/></method>\
+    </interface></node>";
+
+/// The daemon's side of the bus: owns the name on request, and answers
+/// `RegisterClient`/`UnregisterClient` by logging "register <sender>" into the
+/// fake HUD's log, so the order of the two is observable. It lives on a thread
+/// with a main context of its own, because tests run on parallel threads.
+struct Daemon {
+    commands: std::sync::mpsc::Sender<(&'static str, std::sync::mpsc::Sender<()>)>,
+    context: MainContext,
+}
+
+impl Daemon {
+    fn start(address: &str, log: PathBuf) -> Self {
+        let (commands, inbox) =
+            std::sync::mpsc::channel::<(&'static str, std::sync::mpsc::Sender<()>)>();
+        let context = MainContext::new();
+        let address = address.to_owned();
+        let owned = context.clone();
+        let (ready_tx, ready) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            owned
+                .with_thread_default(|| {
+                    let conn = owned
+                        .block_on(gio::DBusConnection::for_address_future(
+                            &address,
+                            gio::DBusConnectionFlags::AUTHENTICATION_CLIENT
+                                | gio::DBusConnectionFlags::MESSAGE_BUS_CONNECTION,
+                            None,
+                        ))
+                        .unwrap();
+                    let info = gio::DBusNodeInfo::for_xml(IFACE_XML).unwrap();
+                    let _registration = conn
+                        .register_object(
+                            "/com/canonical/Myna/Dictation",
+                            &info
+                                .lookup_interface("com.canonical.Myna.Dictation")
+                                .unwrap(),
+                        )
+                        .method_call(move |_, sender, _, _, method, _, invocation| {
+                            use std::io::Write;
+                            let verb = if method == "RegisterClient" {
+                                "register"
+                            } else {
+                                "unregister"
+                            };
+                            let mut file = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&log)
+                                .unwrap();
+                            writeln!(file, "{verb} {}", sender.unwrap_or("")).unwrap();
+                            invocation.return_value(Some(&(1u32,).to_variant()));
+                        })
+                        .build()
+                        .unwrap();
+                    ready_tx.send(()).unwrap();
+                    loop {
+                        owned.iteration(true);
+                        match inbox.try_recv() {
+                            Ok((method, done)) => {
+                                conn.call_sync(
+                                    Some("org.freedesktop.DBus"),
+                                    "/org/freedesktop/DBus",
+                                    "org.freedesktop.DBus",
+                                    method,
+                                    Some(&if method == "RequestName" {
+                                        Variant::tuple_from_iter([
+                                            NAME.to_variant(),
+                                            0u32.to_variant(),
+                                        ])
+                                    } else {
+                                        Variant::tuple_from_iter([NAME.to_variant()])
+                                    }),
+                                    None,
+                                    gio::DBusCallFlags::NONE,
+                                    5000,
+                                    None::<&gio::Cancellable>,
+                                )
+                                .unwrap();
+                                let _ = done.send(());
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                        }
+                    }
+                })
+                .unwrap();
+        });
+        ready.recv().unwrap();
+        Self { commands, context }
+    }
+
+    fn call(&self, method: &'static str) {
+        let (done, finished) = std::sync::mpsc::channel();
+        self.commands.send((method, done)).unwrap();
+        self.context.wakeup();
+        finished.recv().unwrap();
+    }
+}
+
 struct Rig {
     dir: PathBuf,
     address: String,
     _bus: Killer,
-    daemon: gio::DBusConnection,
+    daemon: Daemon,
     host: Option<Child>,
 }
 
@@ -56,19 +159,7 @@ impl Rig {
             .read_line(&mut address)
             .unwrap();
         let address = address.trim().to_owned();
-        // A context of its own: tests run on parallel threads.
-        let context = MainContext::new();
-        let daemon = context
-            .with_thread_default(|| {
-                context.block_on(gio::DBusConnection::for_address_future(
-                    &address,
-                    gio::DBusConnectionFlags::AUTHENTICATION_CLIENT
-                        | gio::DBusConnectionFlags::MESSAGE_BUS_CONNECTION,
-                    None,
-                ))
-            })
-            .unwrap()
-            .unwrap();
+        let daemon = Daemon::start(&address, dir.join("log"));
         let mut rig = Self {
             dir,
             address,
@@ -101,32 +192,12 @@ impl Rig {
         child
     }
 
-    fn call(&self, method: &str, flags: u32) {
-        self.daemon
-            .call_sync(
-                Some("org.freedesktop.DBus"),
-                "/org/freedesktop/DBus",
-                "org.freedesktop.DBus",
-                method,
-                Some(&if method == "RequestName" {
-                    Variant::tuple_from_iter([NAME.to_variant(), flags.to_variant()])
-                } else {
-                    Variant::tuple_from_iter([NAME.to_variant()])
-                }),
-                None,
-                gio::DBusCallFlags::NONE,
-                5000,
-                None::<&gio::Cancellable>,
-            )
-            .unwrap();
-    }
-
     fn daemon_up(&self) {
-        self.call("RequestName", 0);
+        self.daemon.call("RequestName");
     }
 
     fn daemon_down(&self) {
-        self.call("ReleaseName", 0);
+        self.daemon.call("ReleaseName");
     }
 
     fn log(&self) -> Vec<String> {
@@ -192,7 +263,7 @@ fn the_hud_runs_only_while_the_daemon_owns_the_name() {
     assert!(rig.log().is_empty(), "no daemon, no HUD");
 
     rig.daemon_up();
-    rig.wait_for("start", |log| log == ["start --host x11"]);
+    rig.wait_for("start", |log| Rig::count(log, "start") == 1);
     rig.daemon_down();
     rig.wait_for("term", |log| log.iter().any(|l| l == "term"));
     rig.settle();
@@ -200,6 +271,34 @@ fn the_hud_runs_only_while_the_daemon_owns_the_name() {
 
     rig.daemon_up();
     rig.wait_for("start again", |log| Rig::count(log, "start") == 2);
+}
+
+/// The HUD takes seconds to register itself, and until something is
+/// registered the daemon shows toasts: the host's registration must be on the
+/// daemon's books before the HUD even starts.
+#[test]
+fn the_host_registers_with_the_daemon_before_it_starts_the_hud() {
+    let rig = Rig::new("register", WELL_BEHAVED, "3000");
+    rig.daemon_up();
+    rig.wait_for("start", |log| Rig::count(log, "start") == 1);
+    let log = rig.log();
+    assert!(log[0].starts_with("register :1."), "{log:?}");
+    assert_eq!(log[1], "start --host x11", "{log:?}");
+    assert_eq!(Rig::count(&log, "register"), 1, "{log:?}");
+}
+
+#[test]
+fn a_daemon_that_comes_back_is_registered_with_again() {
+    let rig = Rig::new("reregister", WELL_BEHAVED, "3000");
+    rig.daemon_up();
+    rig.wait_for("start", |log| Rig::count(log, "start") == 1);
+    rig.daemon_down();
+    rig.wait_for("term", |log| log.iter().any(|l| l == "term"));
+    rig.daemon_up();
+    rig.wait_for("second start", |log| Rig::count(log, "start") == 2);
+    let log = rig.log();
+    assert_eq!(Rig::count(&log, "register"), 2, "{log:?}");
+    assert_eq!(Rig::count(&log, "unregister"), 0, "{log:?}");
 }
 
 #[test]
@@ -223,6 +322,11 @@ fn exit_78_ends_it_for_the_session() {
     rig.settle();
     rig.settle();
     assert_eq!(Rig::count(&rig.log(), "start"), 1);
+    // It withdrew its pill on the first 78, and the second daemon never
+    // got a registration at all.
+    let log = rig.log();
+    assert_eq!(Rig::count(&log, "register"), 1, "{log:?}");
+    assert_eq!(Rig::count(&log, "unregister"), 1, "{log:?}");
 }
 
 #[test]
@@ -255,6 +359,7 @@ fn stopping_the_supervisor_stops_the_hud() {
     assert!(status.success(), "{status:?}");
     rig.wait_for("term", |log| log.iter().any(|l| l == "term"));
     assert!(!rig.running(&rig.marker()));
+    rig.wait_for("unregister", |log| Rig::count(log, "unregister") == 1);
 }
 
 #[test]

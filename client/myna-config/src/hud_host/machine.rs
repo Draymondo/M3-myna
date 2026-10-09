@@ -30,10 +30,18 @@ pub enum Event {
     KillDue,
     /// Spawn happened at this time (the clock for uptime).
     Spawned { now_ms: u64 },
+    /// The host itself is ending, the daemon possibly still up.
+    Shutdown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
+    /// Tell the daemon a pill is coming (`RegisterClient`); always ahead of
+    /// the `Spawn` it accompanies, so a dictation during the HUD's slow start
+    /// does not fall back to a toast.
+    Register,
+    /// Withdraw that: this host no longer intends to show a pill.
+    Unregister,
     Spawn,
     Terminate,
     Kill,
@@ -72,6 +80,8 @@ pub struct Machine {
     /// The HUD said this session cannot host it.
     refused: bool,
     dormant: bool,
+    /// The daemon holds our `RegisterClient` (its registry dies with it).
+    registered: bool,
     grace_ms: u64,
 }
 
@@ -89,6 +99,7 @@ impl Machine {
             failures: 0,
             refused: false,
             dormant: false,
+            registered: false,
             grace_ms: TERM_GRACE_MS,
         }
     }
@@ -108,6 +119,11 @@ impl Machine {
         match event {
             Event::NameOwned => self.name_owned(),
             Event::NameLost => self.name_lost(),
+            Event::Shutdown => {
+                let mut actions = self.unregister();
+                actions.extend(self.name_lost());
+                actions
+            }
             Event::Spawned { now_ms } => {
                 self.child = Child::Running { since_ms: now_ms };
                 vec![]
@@ -141,13 +157,27 @@ impl Machine {
             return vec![];
         }
         self.owned = true;
+        if !self.startable() {
+            return vec![];
+        }
+        // Intent first: the HUD takes seconds to register itself, and the
+        // daemon shows toasts while nothing is registered.
+        self.registered = true;
+        let mut actions = vec![Action::Register];
         match self.child {
-            Child::None if self.startable() => vec![Action::Spawn],
-            Child::Stopping { .. } => {
-                self.child = Child::Stopping { then_start: true };
-                vec![]
-            }
-            _ => vec![],
+            Child::None => actions.push(Action::Spawn),
+            Child::Stopping { .. } => self.child = Child::Stopping { then_start: true },
+            _ => {}
+        }
+        actions
+    }
+
+    /// Withdraw the registration, if there is one to withdraw.
+    fn unregister(&mut self) -> Vec<Action> {
+        if std::mem::take(&mut self.registered) {
+            vec![Action::Unregister]
+        } else {
+            vec![]
         }
     }
 
@@ -156,6 +186,8 @@ impl Machine {
             return vec![];
         }
         self.owned = false;
+        // The registry went with the daemon.
+        self.registered = false;
         // A new daemon lifetime is a fresh incident.
         self.failures = 0;
         self.dormant = false;
@@ -181,7 +213,9 @@ impl Machine {
         self.failures += 1;
         if self.failures > RESTART_BUDGET {
             self.dormant = true;
-            return vec![Action::Log(Note::Dormant)];
+            let mut actions = self.unregister();
+            actions.push(Action::Log(Note::Dormant));
+            return actions;
         }
         self.child = Child::Backoff;
         let delay = BASE_BACKOFF_MS
@@ -205,7 +239,9 @@ impl Machine {
                 self.child = Child::None;
                 if code == Some(EXIT_CANNOT_HOST) {
                     self.refused = true;
-                    return vec![Action::Log(Note::CannotHost)];
+                    let mut actions = self.unregister();
+                    actions.push(Action::Log(Note::CannotHost));
+                    return actions;
                 }
                 let uptime = now_ms.saturating_sub(since_ms);
                 if uptime >= HEALTHY_UPTIME_MS {
@@ -226,7 +262,7 @@ mod tests {
 
     fn running() -> Machine {
         let mut m = Machine::new();
-        assert_eq!(m.step(Event::NameOwned), [Action::Spawn]);
+        assert_eq!(m.step(Event::NameOwned), [Action::Register, Action::Spawn]);
         m.step(Event::Spawned { now_ms: 0 });
         m
     }
@@ -248,7 +284,7 @@ mod tests {
     #[test]
     fn the_name_appearing_starts_the_hud_once() {
         let mut m = Machine::new();
-        assert_eq!(m.step(Event::NameOwned), [Action::Spawn]);
+        assert_eq!(m.step(Event::NameOwned), [Action::Register, Action::Spawn]);
         assert!(m.step(Event::NameOwned).is_empty());
     }
 
@@ -346,7 +382,10 @@ mod tests {
             m.step(Event::RestartDue);
             m.step(Event::Spawned { now_ms: i });
         }
-        assert_eq!(crash(&mut m, 9), [Action::Log(Note::Dormant)]);
+        assert_eq!(
+            crash(&mut m, 9),
+            [Action::Unregister, Action::Log(Note::Dormant)]
+        );
         // The name flapping does not restart a dormant HUD...
         assert!(m.step(Event::NameOwned).is_empty());
         assert!(!m.has_child());
@@ -360,9 +399,12 @@ mod tests {
             m.step(Event::RestartDue);
             m.step(Event::Spawned { now_ms: i });
         }
-        assert_eq!(crash(&mut m, 9), [Action::Log(Note::Dormant)]);
+        assert_eq!(
+            crash(&mut m, 9),
+            [Action::Unregister, Action::Log(Note::Dormant)]
+        );
         m.step(Event::NameLost);
-        assert_eq!(m.step(Event::NameOwned), [Action::Spawn]);
+        assert_eq!(m.step(Event::NameOwned), [Action::Register, Action::Spawn]);
     }
 
     #[test]
@@ -399,7 +441,7 @@ mod tests {
             code: Some(EXIT_CANNOT_HOST),
             now_ms: 5,
         });
-        assert_eq!(actions, [Action::Log(Note::CannotHost)]);
+        assert_eq!(actions, [Action::Unregister, Action::Log(Note::CannotHost)]);
         m.step(Event::NameLost);
         assert!(m.step(Event::NameOwned).is_empty());
         assert!(!m.has_child());
@@ -414,7 +456,7 @@ mod tests {
             now_ms: 5,
         });
         assert_eq!(actions, [Action::CancelKill]);
-        assert_eq!(m.step(Event::NameOwned), [Action::Spawn]);
+        assert_eq!(m.step(Event::NameOwned), [Action::Register, Action::Spawn]);
     }
 
     #[test]
@@ -439,7 +481,7 @@ mod tests {
     fn the_name_returning_while_stopping_starts_a_fresh_hud_after_the_exit() {
         let mut m = running();
         m.step(Event::NameLost);
-        assert!(m.step(Event::NameOwned).is_empty());
+        assert_eq!(m.step(Event::NameOwned), [Action::Register]);
         let actions = m.step(Event::Exited {
             code: Some(0),
             now_ms: 7,
@@ -463,7 +505,7 @@ mod tests {
     #[test]
     fn a_failed_spawn_backs_off_like_a_crash() {
         let mut m = Machine::new();
-        assert_eq!(m.step(Event::NameOwned), [Action::Spawn]);
+        assert_eq!(m.step(Event::NameOwned), [Action::Register, Action::Spawn]);
         assert_eq!(
             m.step(Event::SpawnFailed { now_ms: 0 }),
             [Action::ArmRestart(500)]
@@ -484,7 +526,7 @@ mod tests {
         }
         assert_eq!(
             m.step(Event::SpawnFailed { now_ms: 0 }),
-            [Action::Log(Note::Dormant)]
+            [Action::Unregister, Action::Log(Note::Dormant)]
         );
     }
 
@@ -504,5 +546,77 @@ mod tests {
         let mut m = running();
         m.step(Event::NameLost);
         assert!(m.step(Event::NameLost).is_empty());
+    }
+
+    #[test]
+    fn the_name_appearing_registers_before_it_spawns() {
+        let mut m = Machine::new();
+        assert_eq!(m.step(Event::NameOwned), [Action::Register, Action::Spawn]);
+    }
+
+    #[test]
+    fn exit_78_unregisters_and_a_later_daemon_is_not_registered_for() {
+        let mut m = running();
+        let actions = m.step(Event::Exited {
+            code: Some(EXIT_CANNOT_HOST),
+            now_ms: 5,
+        });
+        assert_eq!(actions, [Action::Unregister, Action::Log(Note::CannotHost)]);
+        assert!(m.step(Event::NameLost).is_empty());
+        assert!(m.step(Event::NameOwned).is_empty());
+    }
+
+    #[test]
+    fn giving_up_unregisters() {
+        let mut m = running();
+        for i in 0..u64::from(RESTART_BUDGET) {
+            crash(&mut m, i);
+            m.step(Event::RestartDue);
+            m.step(Event::Spawned { now_ms: i });
+        }
+        assert_eq!(
+            crash(&mut m, 9),
+            [Action::Unregister, Action::Log(Note::Dormant)]
+        );
+        // The registry died with the daemon; the next one is registered afresh.
+        assert!(m.step(Event::NameLost).is_empty());
+        assert_eq!(m.step(Event::NameOwned), [Action::Register, Action::Spawn]);
+    }
+
+    #[test]
+    fn a_crash_keeps_the_registration_through_the_backoff() {
+        let mut m = running();
+        assert_eq!(crash(&mut m, 1), [Action::ArmRestart(500)]);
+        assert_eq!(m.step(Event::RestartDue), [Action::Spawn]);
+    }
+
+    #[test]
+    fn the_name_vanishing_needs_no_unregister() {
+        let mut m = running();
+        assert_eq!(
+            m.step(Event::NameLost),
+            [Action::Terminate, Action::ArmKill(TERM_GRACE_MS)]
+        );
+        m.step(Event::Exited {
+            code: Some(0),
+            now_ms: 1,
+        });
+        // A second daemon is registered with again.
+        assert_eq!(m.step(Event::NameOwned), [Action::Register, Action::Spawn]);
+    }
+
+    #[test]
+    fn shutdown_unregisters_while_the_daemon_lives() {
+        let mut m = running();
+        assert_eq!(
+            m.step(Event::Shutdown),
+            [
+                Action::Unregister,
+                Action::Terminate,
+                Action::ArmKill(TERM_GRACE_MS)
+            ]
+        );
+        let mut idle = Machine::new();
+        assert!(idle.step(Event::Shutdown).is_empty());
     }
 }
