@@ -1407,12 +1407,11 @@ impl BackendUi {
         let gate = gate.clone();
         let window = window.clone();
         glib::spawn_future_local(async move {
-            let extensions: Rc<dyn crate::ports::ShellExtensions> =
-                Rc::new(crate::adapters::shell_extensions::GnomeShellExtensions::new());
+            let desktop = crate::platform::Platform::current().components();
             let components = crate::onboarding_ui::assess_machine(
                 repository.as_ref(),
                 configurator.as_ref(),
-                extensions.as_ref(),
+                desktop.as_ref(),
             )
             .await;
             if ui.upgrade().is_none() {
@@ -1424,7 +1423,7 @@ impl BackendUi {
                 components,
                 repository,
                 configurator,
-                extensions,
+                desktop,
                 crate::onboarding_ui::Opener::Settings(window.upcast_ref()),
             );
             wizard.window().connect_close_request(move |_| {
@@ -2019,7 +2018,7 @@ impl BackendUi {
         let discovery_error = self.controller.last_discovery_error();
         let snaps = self.installed_snaps.borrow().clone();
         let host = self.host.borrow().clone();
-        let (system, machine, daemon, daemon_report, extension) = match host {
+        let (system, machine, daemon, daemon_report, desktop) = match host {
             Some(host) => (
                 Some(crate::machine::SystemFacts {
                     languages: self
@@ -2032,9 +2031,9 @@ impl BackendUi {
                 Some(host.machine),
                 host.daemon,
                 host.daemon_report,
-                Some(host.extension),
+                host.desktop,
             ),
-            None => (None, None, None, None, None),
+            None => (None, None, None, None, Default::default()),
         };
         DiagnosticInput {
             inventory_complete: self.inventory_complete.get(),
@@ -2042,7 +2041,8 @@ impl BackendUi {
             machine,
             daemon,
             daemon_report,
-            extension,
+            extension: desktop.extension,
+            desktop: desktop.components,
             performance: self.performance.borrow().clone(),
             backends: pages
                 .iter()
@@ -3339,22 +3339,18 @@ struct HostFacts {
     machine: crate::machine::MachineFacts,
     daemon: Option<crate::machine::ProcessMemory>,
     daemon_report: Option<crate::machine::DaemonReport>,
-    extension: crate::onboarding::ExtensionReport,
+    desktop: crate::platform::DesktopDiagnostics,
 }
 
 /// Blocks on /proc and on the session bus: only for the blocking pool.
 fn host_facts() -> HostFacts {
+    let desktop = crate::platform::Platform::current().diagnostics();
     HostFacts {
-        system: crate::machine::system_facts(
-            crate::adapters::shell_extensions::shell_version(),
-            Vec::new(),
-        ),
+        system: crate::machine::system_facts(desktop.shell.clone(), Vec::new()),
         machine: crate::machine::machine_facts(),
         daemon: crate::machine::snap_process("myna"),
         daemon_report: crate::machine::daemon_report(),
-        extension: crate::adapters::shell_extensions::extension_report(
-            crate::onboarding::SHELL_EXTENSION_UUID,
-        ),
+        desktop,
     }
 }
 
