@@ -17,9 +17,15 @@ HUD or consume `com.canonical.Myna.Dictation` itself — the standalone
   list, on all workspaces, above normal windows, never focused),
 - positions it bottom-centre of the primary work area (and keeps it clear
   of an auto-hide bottom dash-to-dock via `Main.layoutManager.dashToDockStruts`),
-- supervises it (respawn on unexpected exit with bounded backoff, terminate
-  fallback suppression now uses `com.canonical.Myna.Dictation` `RegisterClient`
-  client set.
+- supervises it (respawn on unexpected exit with bounded backoff, terminated
+  when the daemon goes),
+- owns the "a pill is coming" registration (`registration.js`): it calls the
+  daemon's `RegisterClient` when the name appears, before it spawns the
+  renderer, and `UnregisterClient` when it gives up on the renderer or is
+  disabled. The renderer takes seconds to register itself, and the daemon
+  falls back to notifications only while no client is registered; the daemon
+  prunes a vanished host by its unique name and forgets all registrations when
+  it restarts, so neither needs an explicit call.
 
 The HUD pill itself, its level indicators, reduced-motion and contrast
 handling, lab and simulator modes all live in `client/myna-hud`. Contract
