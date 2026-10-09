@@ -19,6 +19,8 @@ set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$(dirname "$HERE")" || exit 1
 
+# A bus of its own per test: some of them talk to a stand-in daemon on it, and
+# a missing one would make them skip rather than fail.
 for t in test/*.test.js; do
-    gjs -m "$t" || exit 1
+    dbus-run-session -- gjs -m "$t" || exit 1
 done

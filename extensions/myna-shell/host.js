@@ -26,6 +26,7 @@ import {computePlacement, placementChanged, pointerOverFrame, shrinkWorkAreaForD
 import {initialState, planRestart} from './respawn.js';
 import {resolveHudLaunch} from './resolve.js';
 import {DictationAnnouncer} from './announcer.js';
+import {PillRegistration} from './registration.js';
 import {configureTrustedWindow, getCursorTracker, launchTrustedClient} from './mutterCompat.js';
 
 // Await the subprocess with a Cancellable instead of a bare callback, so
@@ -83,6 +84,7 @@ export class OverlayHost {
         this._getDockReservedExtent = getDockReservedExtent;
         this._log = log;
         this._proxy = proxy;
+        this._registration = new PillRegistration({proxy, log});
 
         this._client = null;         // Meta.WaylandClient
         this._subprocess = null;     // its GSubprocess (for force_exit)
@@ -139,6 +141,7 @@ export class OverlayHost {
      * (XH7). Safe to call when never enabled or already disabled. */
     disable() {
         this._unwatchDaemon();
+        this._registration.unregister();
         this._stopRenderer();
     }
 
@@ -192,10 +195,14 @@ export class OverlayHost {
         this._dormant = false;
         this._restartState = initialState();
         this._log('daemon appeared; starting the renderer');
+        // Intent first: the renderer needs seconds to register itself, and
+        // until something is registered the daemon shows a toast instead.
+        this._registration.register();
         this._spawn();
     }
 
     _onDaemonVanished() {
+        this._registration.forget();
         if (!this._subprocess && !this._restartTimeoutId)
             return;
         this._log('daemon vanished; stopping the renderer');
@@ -248,6 +255,13 @@ export class OverlayHost {
         this._announcer = null;
     }
 
+    /** No renderer will come: stay dormant and withdraw the pill's
+     * registration, so the daemon's toast is the fallback again. */
+    _giveUp() {
+        this._dormant = true;
+        this._registration.unregister();
+    }
+
     /** Whether the host has given up after exhausting the restart budget
      * (XH3). Exposed for the extension's presence/logging. */
     get dormant() {
@@ -269,7 +283,7 @@ export class OverlayHost {
             this._log(
                 `renderer not found (${launch.source}); staying dormant — ` +
                 `set ${'MYNA_HUD_BINARY'} or install the myna snap`);
-            this._dormant = true;
+            this._giveUp();
             return;
         }
 
@@ -297,7 +311,7 @@ export class OverlayHost {
 
         if (!subprocess) {
             this._log(`failed to launch renderer (${launch.source}); staying dormant`);
-            this._dormant = true;
+            this._giveUp();
             return;
         }
 
@@ -706,7 +720,7 @@ export class OverlayHost {
         this._restartState = {consecutiveFailures: plan.consecutiveFailures};
 
         if (plan.dormant) {
-            this._dormant = true;
+            this._giveUp();
             this._log(
                 `renderer failed ${plan.consecutiveFailures} times; ` +
                 'giving up (dormant) — will retry on next enable');
