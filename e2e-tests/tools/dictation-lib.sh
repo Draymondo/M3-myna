@@ -146,6 +146,20 @@ notify_watch_start() {
 # Myna toasted nothing (the daemon falls back to notifications while no HUD
 # is registered).
 no_myna_toast() { ! grep -q 'string "Myna"' "$NOTIFY_LOG"; }
+# The same, for what was sent after `notify_mark` (the watch keeps appending).
+notify_mark() { wc -c < "$NOTIFY_LOG" > "$HOME/myna-shot/notify.mark"; }
+no_myna_toast_since_mark() {
+    ! tail -c +$(($(cat "$HOME/myna-shot/notify.mark") + 1)) "$NOTIFY_LOG" | grep -q 'string "Myna"'
+}
+
+# Restart the daemon the way the service manager does, and return once the
+# new one owns its bus name.
+daemon_restart() {
+    systemctl --user restart snap.myna.myna.service
+    wait_until 30 dictation_state_is idle
+}
+# The pill is up while the daemon is still listening: it was not too late.
+pill_while_listening() { pill_shows && dictation_state_is recording; }
 
 pill_id() { DISPLAY=${DISPLAY:-:0} xdotool search --onlyvisible --name '^myna-hud$' | head -1; }
 active_window() { DISPLAY=${DISPLAY:-:0} xprop -root _NET_ACTIVE_WINDOW | sed 's/.*# //'; }

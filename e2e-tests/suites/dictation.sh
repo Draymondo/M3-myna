@@ -25,6 +25,10 @@
 #      session cannot be photographed from inside anyway. The case waits for
 #      the HUD to register, then asserts the pill's window state, that the
 #      field kept focus and that the daemon sent no toast.
+#   9. (Xubuntu only) the daemon restarts and a dictation starts at once,
+#      with no wait for the HUD: the host's registration stands in for the
+#      pill that is on its way, so no toast, and the pill shows while still
+#      listening.
 set -uo pipefail
 # shellcheck source=e2e-tests/suites/lib.sh
 source "$(dirname "$0")/lib.sh"
@@ -201,6 +205,25 @@ if [ "$DESKTOP" = xubuntu ]; then
     dict 'checkpoint 05-error'
     assert_dict "the HUD logged no GTK critical" 'hud_log_clean'
     evidence 8
+
+    echo "-- 9. a dictation the moment the daemon is back, before its HUD is"
+    assert_dict "the field is cleared" 'field_clear'
+    assert_dict "the plain field is focused afresh" 'field_focus other && field_focus plain'
+    dict notify_mark
+    dict 'daemon_restart'
+    # No wait for the HUD: it needs seconds to register, and the host has
+    # already said a pill is coming.
+    dict dictation_toggle
+    assert_dict "recording" 'wait_until 15 dictation_state_is recording'
+    assert_dict "the daemon did not fall back to a toast" 'no_myna_toast_since_mark'
+    assert_dict "the pill shows while still listening" 'wait_until 30 pill_while_listening'
+    assert_dict "still no toast, now the pill is up" 'no_myna_toast_since_mark'
+    dict 'checkpoint 06-listening-after-restart'
+    dict dictation_toggle
+    assert_dict "idle after the stop" 'wait_until 10 dictation_state_is idle'
+    assert_dict "the whole transcript is in the field" "wait_until 10 field_is plain '$FULL'"
+    assert_dict "the HUD logged no GTK critical" 'hud_log_clean'
+    evidence 9
 fi
 
 dict 'mic_stop' >/dev/null 2>&1
