@@ -500,8 +500,8 @@ impl Context<'_> {
 enum FocusChange<'a> {
     /// `FocusInId(path, client)`, or plain `FocusIn` (`None`).
     In(Option<Context<'a>>),
-    /// `FocusOut` or `FocusOutId`.
-    Out,
+    /// `FocusOutId(path)`, or plain `FocusOut` (`None`).
+    Out(Option<&'a str>),
 }
 
 /// The input context a lease may write to.
@@ -611,7 +611,7 @@ impl Lease {
             .activated_at
             .is_some_and(|at| at.elapsed() <= ACTIVATION_WINDOW);
         let next = match (&mut self.binding, change) {
-            (Binding::Pending, FocusChange::Out) => {
+            (Binding::Pending, FocusChange::Out(_)) => {
                 self.on_fake = false;
                 return;
             }
@@ -619,17 +619,24 @@ impl Lease {
                 self.on_fake = true;
                 return;
             }
-            (Binding::Away { back, .. }, FocusChange::Out) => {
+            (Binding::Away { back, .. }, FocusChange::Out(_)) => {
                 *back = false;
                 return;
             }
             (Binding::Away { .. }, FocusChange::In(Some(ctx))) if ctx.is_fake() => return,
             (Binding::Pending, FocusChange::In(None)) => Binding::Unnamed,
-            (Binding::Unnamed, FocusChange::Out) if !self.wrote => Binding::Left { blip },
+            (Binding::Unnamed, FocusChange::Out(_)) if !self.wrote => Binding::Left { blip },
+            // Written to, so a field: named now, it leaves as a named one does.
+            (Binding::Unnamed, FocusChange::Out(Some(path))) => Binding::Away {
+                path: path.to_owned(),
+                blip,
+                activated: recent,
+                back: false,
+            },
             (Binding::Unnamed, FocusChange::In(Some(ctx))) if ctx.is_fake() && !self.wrote => {
                 Binding::Left { blip }
             }
-            (Binding::Left { .. }, FocusChange::Out) => return,
+            (Binding::Left { .. }, FocusChange::Out(_)) => return,
             (Binding::Left { .. }, FocusChange::In(Some(ctx))) if ctx.is_fake() => return,
             (Binding::Left { .. }, FocusChange::In(None)) => Binding::Unnamed,
             (
@@ -637,7 +644,7 @@ impl Lease {
                 FocusChange::In(Some(ctx)),
             ) if !ctx.is_fake() => Binding::Context(ctx.path.to_owned()),
             (Binding::Context(path), FocusChange::In(Some(ctx))) if *path == ctx.path => return,
-            (Binding::Context(path), FocusChange::Out) => Binding::Away {
+            (Binding::Context(path), FocusChange::Out(_)) => Binding::Away {
                 path: std::mem::take(path),
                 blip,
                 activated: recent,
@@ -973,13 +980,13 @@ impl EngineObject {
 
     async fn focus_out(&self) {
         myna_core::dbg_log!("inject", "IBus FocusOut received");
-        self.state.focus(FocusChange::Out);
+        self.state.focus(FocusChange::Out(None));
     }
 
     #[zbus(name = "FocusOutId")]
     async fn focus_out_id(&self, object_path: String) {
         myna_core::dbg_log!("inject", "IBus FocusOutId {object_path}");
-        self.state.focus(FocusChange::Out);
+        self.state.focus(FocusChange::Out(Some(&object_path)));
     }
 
     /// Read-only, as in `ibus-engine-simple`: asks the daemon to name the input
@@ -1715,8 +1722,9 @@ mod tests {
     }
 
     /// Once something was written, the unnamed focus was a field: focus
-    /// leaving it, or turning out to be the fake context, ends the lease.
-    #[tokio::test]
+    /// leaving it with no activation, or turning out to be the fake context,
+    /// ends the lease.
+    #[tokio::test(start_paused = true)]
     async fn an_unnamed_focus_written_to_does_not_move() {
         for named_fake in [false, true] {
             let state = engine_state();
@@ -1728,6 +1736,7 @@ mod tests {
                 engine.focus_in_id(FAKE.into(), "fake".into()).await;
             } else {
                 engine.focus_out_id(FIELD.into()).await;
+                engine.focus_in_id(OTHER.into(), APP.into()).await;
             }
             assert!(!state.holds(lease), "named fake: {named_fake}");
         }
@@ -1815,12 +1824,36 @@ mod tests {
         assert!(!state.holds(lease));
     }
 
+    /// A field focused unnamed and written to, stopped by key on X11: by then
+    /// the daemon names contexts, so the grab's `FocusOutId` names the field,
+    /// and the blip around the activation is ridden out as for a named one.
+    #[tokio::test(start_paused = true)]
+    async fn a_blip_on_an_unnamed_field_written_to_is_ridden_out() {
+        let state = engine_state();
+        let lease = state.mint();
+        let engine = engine(&state);
+        engine.focus_in().await;
+        state.wrote(lease);
+
+        grab(&engine).await;
+        state.activated(lease);
+        tokio::time::sleep(EDGE_AFTER).await;
+        engine.focus_out_id(FAKE.into()).await;
+        engine.focus_in_id(FIELD.into(), APP.into()).await;
+        tokio::time::sleep(FOCUS_BLIP_GRACE).await;
+        assert!(state.holds(lease));
+        assert_eq!(standing_now(&state, lease), Some(Standing::Held));
+    }
+
     /// A second plain focus is a focus change the daemon could not name, as
     /// is a plain `FocusOut` once something was written (unwritten, it may be
     /// the fake context's: see the unnamed focus cases above).
     #[tokio::test]
     async fn plain_focus_calls_after_the_first_end_the_lease() {
-        for (second, wrote) in [(FocusChange::In(None), false), (FocusChange::Out, true)] {
+        for (second, wrote) in [
+            (FocusChange::In(None), false),
+            (FocusChange::Out(None), true),
+        ] {
             let state = engine_state();
             let lease = state.mint();
             state.focus(FocusChange::In(None));
@@ -2211,7 +2244,7 @@ mod tests {
         };
         state.focus(FocusChange::In(Some(field)));
         state.activated(lease);
-        state.focus(FocusChange::Out);
+        state.focus(FocusChange::Out(None));
         assert!(!state.holds(lease));
     }
 
