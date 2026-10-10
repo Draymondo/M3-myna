@@ -190,8 +190,9 @@ impl X11Host {
         });
 
         let weak = Rc::downgrade(self);
-        surface.connect_layout(move |_, _, _| {
+        surface.connect_layout(move |_, width, height| {
             if let Some(host) = weak.upgrade() {
+                host.check_layout(width, height);
                 if host.window.is_mapped() {
                     host.report(host.place_mapped());
                 }
@@ -232,6 +233,22 @@ impl X11Host {
                 }
             },
         );
+    }
+
+    /// GTK checks an allocation against the content only in its debug
+    /// builds, which the snap's is and the distribution's is not: check it
+    /// here, so a window laid out too small fails the tests either way.
+    fn check_layout(&self, width: i32, height: i32) {
+        let (min_width, ..) = self.window.measure(gtk::Orientation::Horizontal, -1);
+        let (min_height, ..) = self
+            .window
+            .measure(gtk::Orientation::Vertical, width.max(min_width));
+        if width < min_width || height < min_height {
+            glib::g_critical!(
+                "myna-hud",
+                "x11 host: laid out at {width}x{height}, under the content's {min_width}x{min_height}"
+            );
+        }
     }
 
     /// Log a failed step; the HUD keeps rendering wherever the window is.
@@ -401,7 +418,9 @@ impl X11Host {
         let (default_width, default_height) = self.window.default_size();
         let (min_width, ..) = self.window.measure(gtk::Orientation::Horizontal, -1);
         let width = default_width.max(min_width);
-        let (min_height, ..) = self.window.measure(gtk::Orientation::Vertical, width);
+        let (min_height, ..) = self
+            .window
+            .measure(gtk::Orientation::Vertical, width.max(min_width));
         Size {
             width: width * scale,
             height: default_height.max(min_height) * scale,
