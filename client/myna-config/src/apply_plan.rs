@@ -445,6 +445,7 @@ mod tests {
             op(&["install", "--edge", "myna-funasr"]),
             op(&["connect", "myna:backend", "myna-parakeet:provider"]),
             op(&["connect", "myna:backend", "myna-whisper:provider"]),
+            op(&["connect", "myna:backend", "myna-funasr:provider"]),
         ];
         assert_eq!(validate_plan(PlanKind::SetUp, &plan), Ok(()));
 

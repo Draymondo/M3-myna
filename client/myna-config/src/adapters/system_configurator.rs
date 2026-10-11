@@ -818,6 +818,25 @@ mod tests {
         ]
     }
 
+    #[test]
+    fn every_family_s_set_up_passes_the_executor_s_allowlist() {
+        for family in myna_core::language::ModelFamily::ALL {
+            let snap = family.snap_name();
+            let operations: Vec<CommandRequest> = set_up_arguments(&SetUpPlan {
+                flag: true,
+                installs: vec!["myna", snap],
+                connect: Some(snap),
+            })
+            .into_iter()
+            .map(|arguments| CommandRequest::new("snap".to_owned(), arguments))
+            .collect();
+            assert!(
+                apply_plan::encode_plan(PlanKind::SetUp, &operations).is_ok(),
+                "{snap}"
+            );
+        }
+    }
+
     /// The flag, installs and connect are three snapd actions, three
     /// prompts as the user; as root through one pkexec they are one.
     #[test]
