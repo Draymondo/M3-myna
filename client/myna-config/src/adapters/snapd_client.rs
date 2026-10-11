@@ -525,12 +525,19 @@ impl SnapdClient for UnixSocketSnapdClient {
     }
 }
 
-fn blocking_change(
+/// A sync `result` and, truncated, the response it came in.
+struct SyncResult {
+    json: serde_json::Value,
+    body: String,
+}
+
+fn blocking_get(
     socket_path: &Path,
     timeouts: SnapdTimeouts,
     path: &str,
-    cancellation: CancellationToken,
-) -> Result<ChangeInProgress, SnapdError> {
+    what: &str,
+    cancellation: &CancellationToken,
+) -> Result<SyncResult, SnapdError> {
     let start = Instant::now();
     let response = do_request(
         socket_path,
@@ -539,19 +546,17 @@ fn blocking_change(
         None,
         SnapdTimeoutContext::Request,
         &timeouts,
-        &cancellation,
+        cancellation,
         start,
         start + timeouts.per_request,
     )?;
     match parse_envelope(&response)? {
-        Envelope::Sync { result_json } => {
-            parse_change(result_json).map_err(|message| SnapdError::Protocol {
-                message: format!("could not parse the change: {message}"),
-                body: truncate(&response, 512),
-            })
-        }
+        Envelope::Sync { result_json } => Ok(SyncResult {
+            json: result_json,
+            body: truncate(&response, 512),
+        }),
         Envelope::Async { .. } => Err(SnapdError::Protocol {
-            message: "unexpected async envelope for a change".to_owned(),
+            message: format!("unexpected async envelope for {what}"),
             body: truncate(&response, 512),
         }),
         Envelope::Error {
@@ -562,35 +567,32 @@ fn blocking_change(
     }
 }
 
+fn blocking_change(
+    socket_path: &Path,
+    timeouts: SnapdTimeouts,
+    path: &str,
+    cancellation: CancellationToken,
+) -> Result<ChangeInProgress, SnapdError> {
+    let result = blocking_get(socket_path, timeouts, path, "a change", &cancellation)?;
+    parse_change(result.json).map_err(|message| SnapdError::Protocol {
+        message: format!("could not parse the change: {message}"),
+        body: result.body,
+    })
+}
+
 fn blocking_user_daemons_enabled(
     socket_path: &Path,
     timeouts: SnapdTimeouts,
     cancellation: CancellationToken,
 ) -> Result<bool, SnapdError> {
-    let start = Instant::now();
-    let response = do_request(
+    let result = blocking_get(
         socket_path,
-        "GET",
+        timeouts,
         SYSTEM_INFO,
-        None,
-        SnapdTimeoutContext::Request,
-        &timeouts,
+        "the system information",
         &cancellation,
-        start,
-        start + timeouts.per_request,
     )?;
-    match parse_envelope(&response)? {
-        Envelope::Sync { result_json } => Ok(user_daemons_feature(&result_json)),
-        Envelope::Async { .. } => Err(SnapdError::Protocol {
-            message: "unexpected async envelope for the system information".to_owned(),
-            body: truncate(&response, 512),
-        }),
-        Envelope::Error {
-            status_code,
-            kind,
-            message,
-        } => Err(classify_error(status_code, kind, message)),
-    }
+    Ok(user_daemons_feature(&result.json))
 }
 
 /// A snapd that does not list the flag cannot have it on.
@@ -605,35 +607,17 @@ fn blocking_changes_in_progress(
     timeouts: SnapdTimeouts,
     cancellation: CancellationToken,
 ) -> Result<Vec<ChangeInProgress>, SnapdError> {
-    let start = Instant::now();
-    let response = do_request(
+    let result = blocking_get(
         socket_path,
-        "GET",
+        timeouts,
         CHANGES_IN_PROGRESS,
-        None,
-        SnapdTimeoutContext::Request,
-        &timeouts,
+        "the changes list",
         &cancellation,
-        start,
-        start + timeouts.per_request,
     )?;
-    match parse_envelope(&response)? {
-        Envelope::Sync { result_json } => {
-            parse_changes(result_json).map_err(|message| SnapdError::Protocol {
-                message: format!("could not parse the changes list: {message}"),
-                body: truncate(&response, 512),
-            })
-        }
-        Envelope::Async { .. } => Err(SnapdError::Protocol {
-            message: "unexpected async envelope for the changes list".to_owned(),
-            body: truncate(&response, 512),
-        }),
-        Envelope::Error {
-            status_code,
-            kind,
-            message,
-        } => Err(classify_error(status_code, kind, message)),
-    }
+    parse_changes(result.json).map_err(|message| SnapdError::Protocol {
+        message: format!("could not parse the changes list: {message}"),
+        body: result.body,
+    })
 }
 
 fn blocking_apply_interface_action(
