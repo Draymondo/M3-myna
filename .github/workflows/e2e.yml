@@ -19,20 +19,37 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
   pull_request:
-    paths:
-      # Every crate the daemon, the HUD and Settings are built from, and the
-      # snaps and deb that package them.
-      - "client/**"
-      - "myna-snap/**"
-      - "myna-config-deb/**"
-      - "fake-snap/**"
-      - "e2e-tests/**"
-      - ".github/workflows/e2e.yml"
 
 jobs:
+  # Whether this pull request touches what the suites test: every crate the
+  # daemon, the HUD and Settings are built from, the snaps and deb that package
+  # them, and the suites. Decided here rather than by an `on.paths` filter, so
+  # that a pull request outside them still gets an `e2e-result` to require.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      run: ${{ steps.paths.outputs.run }}
+    steps:
+      - id: paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          run=true
+          if [ -n "$PR" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename' > files
+            grep -qE '^(client|myna-snap|myna-config-deb|fake-snap|e2e-tests)/|^\.github/workflows/e2e\.yml$' files || run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
   # The dictation suite's scripted backend (fake-snap/): built once, shared by
   # every matrix job, which provisions it into the VM's `dictation` stage.
   fake-backend:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -56,6 +73,8 @@ jobs:
   # of the commit that built it; nothing here reads it, and a release is built
   # by its own workflow, not this one.
   myna-snap:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -94,8 +113,8 @@ jobs:
         exclude:
           - { desktop: xubuntu, release: resolute }
           - { desktop: xubuntu, release: stonking }
-    # GNOME keeps its release-only names (required checks, artifacts); the
-    # Xubuntu check is "e2e (xubuntu, noble)".
+    # GNOME keeps its release-only names (artifacts, the contact sheet); the
+    # Xubuntu job is "e2e (xubuntu, noble)".
     name: ${{ matrix.desktop == 'gnome' && format('e2e ({0})', matrix.release) || format('e2e ({0}, {1})', matrix.desktop, matrix.release) }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -139,6 +158,24 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
           path: e2e-tests/.run/artifacts/screenshots/
+
+  # The one check to require: every e2e job passed, or none had to run. A
+  # skipped matrix job reports under its unexpanded name, so requiring the
+  # per-release checks would leave a pull request outside the paths waiting.
+  e2e-result:
+    if: always()
+    needs: [changes, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          RUN: ${{ needs.changes.outputs.run }}
+          E2E: ${{ needs.e2e.result }}
+        run: |
+          echo "changes=$CHANGES run=$RUN e2e=$E2E"
+          [ "$CHANGES" = success ] || exit 1
+          [ "$RUN" = false ] || [ "$E2E" = success ]
 
   # Nightly (and on dispatch): the Xubuntu screenshots of this run beside the
   # last approved run's. "Approved" is the newest green scheduled or dispatched
