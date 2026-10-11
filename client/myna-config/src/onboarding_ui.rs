@@ -27,7 +27,7 @@ use crate::onboarding::{
     input_method_missing, install_view, installs, model_offer, needs_onboarding, next_install,
     polls, relogin_pending, remaining_download, set_up_plan, set_up_steps, settled,
     while_installing, Component, ComponentId, ComponentState, DownloadSize, InstallView, Machine,
-    ModelOffer, Step, RECOMMENDED_BACKEND_SNAP,
+    ModelOffer, Step,
 };
 use crate::ports::{BackendRepository, SystemConfigurator, SystemConfiguratorError};
 use crate::shortcut_ui::set_class;
@@ -89,7 +89,10 @@ pub struct OnboardingUi {
     desktop: Rc<dyn Components>,
     step: Cell<Step>,
     components: RefCell<Vec<Component>>,
-    offer: Cell<ModelOffer>,
+    nvidia_gpu: bool,
+    /// The user's languages, most preferred first, once read: the model
+    /// offered is the one recommended for them.
+    languages: RefCell<Option<Vec<String>>>,
     /// Why the last assessment could not read the machine.
     problem: RefCell<Option<String>>,
     busy: Cell<bool>,
@@ -133,18 +136,23 @@ impl OnboardingUi {
             )),
             Rc::new(PkexecSystemConfigurator::new(runner)),
             crate::platform::Platform::current().components(),
+            || myna_core::locale::preferred_languages(&myna_core::locale::SystemLocale::default()),
             Opener::FirstRun,
         )
     }
 
     /// Opened from the settings window, the wizard is modal over it: its
     /// own operations cannot start while the wizard sets a backend up.
+    /// `languages` runs off the main thread, since the system reader may
+    /// block on the system bus; nothing installs until it answers.
+    #[allow(clippy::too_many_arguments)]
     pub fn present_with_ports(
         application: &adw::Application,
         initial: Vec<Component>,
         repository: Rc<dyn BackendRepository>,
         configurator: Rc<dyn SystemConfigurator>,
         desktop: Rc<dyn Components>,
+        languages: impl FnOnce() -> Vec<String> + Send + 'static,
         opener: Opener,
     ) -> Rc<Self> {
         let window = ui::OnboardingWindow::new(application);
@@ -197,10 +205,8 @@ impl OnboardingUi {
             desktop,
             step: Cell::new(Step::first()),
             components: RefCell::new(initial),
-            offer: Cell::new(model_offer(&Machine {
-                nvidia_gpu: crate::machine::has_nvidia_gpu(),
-                ..Machine::default()
-            })),
+            nvidia_gpu: crate::machine::has_nvidia_gpu(),
+            languages: RefCell::default(),
             problem: RefCell::default(),
             busy: Cell::new(false),
             running: Cell::new(false),
@@ -301,6 +307,7 @@ impl OnboardingUi {
         });
 
         crate::app::install_appearance_policy(window.upcast_ref());
+        ui.read_languages(languages);
         ui.render();
         window.present();
         ui
@@ -350,17 +357,38 @@ impl OnboardingUi {
 
     /// Take what a read found as the machine, settling the installs it
     /// confirms.
-    fn take_reading(&self, (components, offer, problem): Reading) {
+    fn take_reading(&self, (components, problem): Reading) {
         self.installs
             .borrow_mut()
             .retain(|_, install| *install != Install::Confirming);
-        self.offer.set(offer);
         match &problem {
             Some(problem) => self.log(&format!("assessment: {problem}")),
             None => self.log(&format!("assessment: {}", describe(&components))),
         }
         self.problem.replace(problem);
         self.components.replace(components);
+    }
+
+    /// The model the wizard installs, once the user's languages are known.
+    fn offer(&self) -> Option<ModelOffer> {
+        self.languages
+            .borrow()
+            .as_deref()
+            .map(|languages| model_offer(languages, self.nvidia_gpu))
+    }
+
+    fn read_languages(self: &Rc<Self>, read: impl FnOnce() -> Vec<String> + Send + 'static) {
+        let ui = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let languages = gio::spawn_blocking(read).await;
+            if let (Some(ui), Ok(languages)) = (ui.upgrade(), languages) {
+                ui.languages.replace(Some(languages));
+                if let Some(offer) = ui.offer() {
+                    ui.log(&format!("offer: {offer:?}"));
+                }
+                ui.render();
+            }
+        });
     }
 
     /// The components as the step shows them: one snapd is still
@@ -393,6 +421,10 @@ impl OnboardingUi {
     /// button offers again what is still missing. Once nothing is left it
     /// sets dictation up and moves on, as Next would.
     fn install_all(self: &Rc<Self>) {
+        // The whole run installs one offer, known once the language is read.
+        let Some(offer) = self.offer() else {
+            return;
+        };
         if self.running.get()
             || self.busy.get()
             || !self.installs.borrow().is_empty()
@@ -424,7 +456,7 @@ impl OnboardingUi {
                         .map(|()| vec![id])
                         .map_err(|error| (id, error))
                 } else {
-                    set_up_step(&ui, &set_up).await.map(|()| set_up)
+                    set_up_step(&ui, &set_up, offer).await.map(|()| set_up)
                 };
                 match outcome {
                     Ok(steps) => {
@@ -459,7 +491,9 @@ impl OnboardingUi {
     /// to start it again. Costs one read of snapd's changes, and only while
     /// such a row is missing.
     async fn follow_installs_elsewhere(self: &Rc<Self>) {
-        let offer = self.offer.get();
+        let Some(offer) = self.offer() else {
+            return;
+        };
         let missing: Vec<(ComponentId, &'static str, u64)> = self
             .shown()
             .iter()
@@ -617,6 +651,7 @@ impl OnboardingUi {
         let ui = Rc::downgrade(self);
         let repository = self.repository.clone();
         let configurator = self.configurator.clone();
+        let preferred = self.offer().map(|offer| offer.snap());
         let interval = self.poll_interval.get();
         let previous_owner = self.shortcut.owner().flatten();
         glib::spawn_future_local(async move {
@@ -642,7 +677,7 @@ impl OnboardingUi {
             let outcome = ensure_backend_active(
                 repository.as_ref(),
                 configurator.as_ref(),
-                RECOMMENDED_BACKEND_SNAP,
+                preferred,
                 &wait,
                 &report,
             )
@@ -832,7 +867,8 @@ impl OnboardingUi {
         // Held, the button stays sensitive so it keeps the window's focus, but
         // takes no input and is dimmed as an insensitive one is; `install_all`
         // already refuses a second run.
-        button.set_sensitive((offer && !self.busy.get()) || held);
+        let model = self.offer();
+        button.set_sensitive((offer && model.is_some() && !self.busy.get()) || held);
         button.set_can_target(!held);
         set_class(&button, "dim-label", held);
         // Next leads once nothing required is missing; insensitive, the
@@ -850,8 +886,8 @@ impl OnboardingUi {
             _ => None,
         };
         let missing_input_method = input_method_missing(components) && !self.busy.get();
-        let size = if offer {
-            match remaining_download(components, &self.offer.get()) {
+        let size = match model.filter(|_| offer) {
+            Some(model) => match remaining_download(components, &model) {
                 DownloadSize::Exact(0) => String::new(),
                 DownloadSize::Exact(bytes) => download_size(bytes),
                 DownloadSize::UpTo(bytes) => {
@@ -859,9 +895,8 @@ impl OnboardingUi {
                     let frame = gettextrs::gettext("Up to {size}");
                     frame.replace("{size}", &download_size(bytes))
                 }
-            }
-        } else {
-            String::new()
+            },
+            None => String::new(),
         };
         // The button has the window's focus while the run goes, and a screen
         // reader speaks a change to the focused control but not to a label
@@ -1088,13 +1123,13 @@ fn purpose_of(id: ComponentId) -> Option<Purpose> {
 async fn set_up_step(
     ui: &std::rc::Weak<OnboardingUi>,
     steps: &[ComponentId],
+    offer: ModelOffer,
 ) -> Result<(), (ComponentId, SystemConfiguratorError)> {
     let cancelled = (ComponentId::UserDaemons, SystemConfiguratorError::Cancelled);
     let Some(strong) = ui.upgrade() else {
         return Err(cancelled);
     };
     strong.epoch.set(strong.epoch.get() + 1);
-    let offer = strong.offer.get();
     let snaps: Vec<(ComponentId, &'static str, u64)> = steps
         .iter()
         .filter_map(|id| installs(*id, &offer).map(|(snap, bytes)| (*id, snap, bytes)))
@@ -1197,18 +1232,16 @@ pub async fn assess_machine(
     configurator: &dyn SystemConfigurator,
     desktop: &dyn Components,
 ) -> Vec<Component> {
-    let (components, _, problem) = read_machine(repository, configurator, desktop).await;
+    let (components, problem) = read_machine(repository, configurator, desktop).await;
     let found = problem.unwrap_or_else(|| describe(&components));
     glib::g_message!(crate::LOG_DOMAIN, "onboarding assessment: {found}");
     components
 }
 
-/// What one read finds: the components, the model the wizard would install,
-/// and what it could not read.
-type Reading = (Vec<Component>, ModelOffer, Option<String>);
+/// What one read finds: the components and what it could not read.
+type Reading = (Vec<Component>, Option<String>);
 
-/// [`assess_machine`], the model it would install, and what it could not
-/// read.
+/// [`assess_machine`] and what it could not read.
 async fn read_machine(
     repository: &dyn BackendRepository,
     configurator: &dyn SystemConfigurator,
@@ -1243,7 +1276,6 @@ async fn read_machine(
     let problem = (!problems.is_empty()).then(|| problems.join("; "));
     let mut machine = Machine {
         user_daemons,
-        nvidia_gpu: crate::machine::has_nvidia_gpu(),
         ..Machine::new(&installed, backends)
     };
     for component in desktop.required() {
@@ -1253,7 +1285,7 @@ async fn read_machine(
             Purpose::TextInput => machine.input_method = Some(status),
         }
     }
-    (assess(machine), model_offer(&machine), problem)
+    (assess(machine), problem)
 }
 
 /// What snap said, which names the cause, over how it exited.

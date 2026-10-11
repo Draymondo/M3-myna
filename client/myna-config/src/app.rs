@@ -367,6 +367,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(ProbeMachine::new()),
             ProbeExtensions::new(ComponentStatus::Active),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.window()
@@ -561,6 +562,11 @@ fn onboarding_probe() -> glib::ExitCode {
         return glib::ExitCode::FAILURE;
     }
 
+    if let Err(failure) = probe_language(&application) {
+        eprintln!("{failure}");
+        return glib::ExitCode::FAILURE;
+    }
+
     // Components installed while the step shows are found without the
     // window ever losing focus. Finding the last one sets dictation up once,
     // says so, and moves on by itself.
@@ -575,6 +581,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Active),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.set_poll_interval(Duration::from_millis(50));
@@ -684,6 +691,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Active),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.set_poll_interval(Duration::from_millis(50));
@@ -724,6 +732,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Active),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.set_poll_interval(Duration::from_millis(50));
@@ -767,6 +776,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Unavailable),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.set_poll_interval(Duration::from_millis(50));
@@ -818,6 +828,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Active),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.set_poll_interval(Duration::from_millis(50));
@@ -895,6 +906,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(ProbeMachine::new()),
             ProbeExtensions::new(ComponentStatus::Active),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.window()
@@ -942,6 +954,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Active),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.window()
@@ -1032,6 +1045,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Active),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         (ui.window(), ui.shortcut_button())
@@ -1223,6 +1237,7 @@ fn onboarding_probe() -> glib::ExitCode {
         )),
         Rc::new(machine.clone()),
         ProbeExtensions::new(ComponentStatus::Active),
+        probe_languages,
         crate::onboarding_ui::Opener::Settings(settings.upcast_ref()),
     )
     .window();
@@ -1812,6 +1827,7 @@ fn onboarding_control_probe() -> glib::ExitCode {
                 )),
                 Rc::new(machine),
                 ProbeExtensions::new(ComponentStatus::Active),
+                probe_languages,
                 crate::onboarding_ui::Opener::FirstRun,
             );
             (ui.window(), ui.shortcut_button(), ui.shortcut())
@@ -2029,6 +2045,7 @@ fn onboarding_control_probe() -> glib::ExitCode {
         )),
         Rc::new(ProbeMachine::new()),
         ProbeExtensions::new(ComponentStatus::Active),
+        probe_languages,
         crate::onboarding_ui::Opener::FirstRun,
     )
     .window();
@@ -3969,14 +3986,20 @@ fn status_busy(page: &ui::OnboardingComponents) -> Option<String> {
     (spinner.is_mapped() && spinner.is_spinning()).then(|| page.status_label().label().to_string())
 }
 
+/// The probes' desktop language, whatever the session running them.
+fn probe_languages() -> Vec<String> {
+    vec!["en_US".to_owned()]
+}
+
 /// The size the button's note gives for `components`, for this machine's
 /// GPU.
 fn expected_size(components: &[crate::onboarding::Component]) -> String {
-    use crate::onboarding::{model_offer, remaining_download, DownloadSize, Machine};
-    let offer = model_offer(&Machine {
-        nvidia_gpu: crate::machine::has_nvidia_gpu(),
-        ..Machine::default()
-    });
+    expected_size_for(components, &probe_languages())
+}
+
+fn expected_size_for(components: &[crate::onboarding::Component], languages: &[String]) -> String {
+    use crate::onboarding::{model_offer, remaining_download, DownloadSize};
+    let offer = model_offer(languages, crate::machine::has_nvidia_gpu());
     match remaining_download(components, &offer) {
         DownloadSize::Exact(bytes) => crate::onboarding_ui::download_size(bytes),
         DownloadSize::UpTo(bytes) => gettextrs::gettext("Up to {size}")
@@ -4048,6 +4071,7 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
             )),
             Rc::new(machine.clone()),
             extensions.clone(),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.set_poll_interval(Duration::from_millis(50));
@@ -4236,7 +4260,7 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
         return Err("activating the running button asked snapd again".to_owned());
     }
     machine.hold_set_up(crate::onboarding::MYNA_SNAP, true);
-    machine.hold_set_up(crate::onboarding::RECOMMENDED_BACKEND_SNAP, true);
+    machine.hold_set_up("myna-parakeet", true);
     machine.hold_prompt(false);
     let app_step = gettextrs::gettext("Installing Dictation app");
     if !until(&|| installing_shown(&window, &app_step)) || machine.installs() != ["myna"] {
@@ -4275,7 +4299,7 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
     machine.fail_installs(Some(
         "cannot perform the following tasks:\n- Run install hook",
     ));
-    machine.hold_set_up(crate::onboarding::RECOMMENDED_BACKEND_SNAP, false);
+    machine.hold_set_up("myna-parakeet", false);
     let model_heading = gettextrs::gettext("Installing the speech-to-text model failed");
     let myna_installed = assess(Machine {
         user_daemons: true,
@@ -4317,7 +4341,7 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
     let plan = |flag: bool, installs: &[&'static str]| crate::ports::SetUpPlan {
         flag,
         installs: installs.to_vec(),
-        connect: Some(crate::onboarding::RECOMMENDED_BACKEND_SNAP),
+        connect: Some("myna-parakeet"),
     };
     if !until(&|| installing_shown(&window, &downloading))
         || machine.set_ups() != 4
@@ -4404,6 +4428,7 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Unavailable),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.set_poll_interval(Duration::from_millis(50));
@@ -4475,6 +4500,7 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
             )),
             Rc::new(machine.clone()),
             extensions.clone(),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.set_beat(Duration::from_millis(50));
@@ -4578,6 +4604,7 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
             )),
             Rc::new(machine.clone()),
             extensions.clone(),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.set_beat(Duration::from_millis(50));
@@ -4627,6 +4654,7 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
             )),
             Rc::new(machine.clone()),
             extensions.clone(),
+            probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
         ui.set_beat(Duration::from_millis(50));
@@ -4693,6 +4721,98 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
     }
     println!("onboarding-partial: only the model installed, then moved on");
     println!("onboarding-optional: an unavailable extension holds nothing");
+    window.close();
+    settle_gtk();
+    Ok(())
+}
+
+/// A Chinese desktop gets the model recommended for Chinese, and nothing
+/// installs before its language is known.
+fn probe_language(application: &adw::Application) -> Result<(), String> {
+    use crate::onboarding::{assess, Machine};
+
+    let machine = ProbeMachine::myna_only();
+    let initial = assess(Machine {
+        user_daemons: true,
+        myna_installed: true,
+        ..Machine::default()
+    });
+    let (answer, question) = std::sync::mpsc::channel::<()>();
+    let window = {
+        let ui = crate::onboarding_ui::OnboardingUi::present_with_ports(
+            application,
+            initial.clone(),
+            Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+                std::sync::Arc::new(machine.clone()),
+                std::sync::Arc::new(machine.clone()),
+            )),
+            Rc::new(machine.clone()),
+            ProbeExtensions::new(ComponentStatus::Unavailable),
+            move || {
+                let _ = question.recv();
+                vec!["zh_CN".to_owned(), "en".to_owned()]
+            },
+            crate::onboarding_ui::Opener::FirstRun,
+        );
+        ui.set_beat(Duration::from_millis(50));
+        ui.window()
+    };
+    settle_gtk();
+    window.forward_button().emit_clicked();
+    settle_gtk();
+    let until = |done: &dyn Fn() -> bool| {
+        for _ in 0..200 {
+            if done() {
+                break;
+            }
+            settle_gtk();
+        }
+        done()
+    };
+    let page = components_page(&window).ok_or("the component step shows no component page")?;
+    let button = page.install_button();
+    button.emit_clicked();
+    settle_gtk();
+    if button.is_sensitive() || status_note(&page).is_some() || machine.set_ups() != 0 {
+        return Err(format!(
+            "before the language is read the button is sensitive {}, notes {:?}, set-ups {}",
+            button.is_sensitive(),
+            status_note(&page),
+            machine.set_ups()
+        ));
+    }
+    println!("onboarding-language: nothing offered before the language is read");
+    answer.send(()).map_err(|error| error.to_string())?;
+    let chinese = ["zh_CN".to_owned()];
+    if !until(&|| button.is_sensitive() && offered(&window, &expected_size_for(&initial, &chinese)))
+    {
+        return Err(format!(
+            "a Chinese desktop's step offers {:?}",
+            status_note(&page)
+        ));
+    }
+    button.emit_clicked();
+    let step = || {
+        window
+            .navigation()
+            .visible_page()
+            .and_then(|page| page.tag())
+            .map(|tag| tag.to_string())
+            .unwrap_or_default()
+    };
+    let plan = crate::ports::SetUpPlan {
+        flag: false,
+        installs: vec!["myna-funasr"],
+        connect: Some("myna-funasr"),
+    };
+    if !until(&|| step() == "shortcut") || machine.set_up_plans() != [plan] {
+        return Err(format!(
+            "a Chinese desktop reached {} with set-ups {:?}",
+            step(),
+            machine.set_up_plans()
+        ));
+    }
+    println!("onboarding-language: a Chinese desktop installs and connects FunASR");
     window.close();
     settle_gtk();
     Ok(())

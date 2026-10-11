@@ -1403,6 +1403,7 @@ impl BackendUi {
         };
         gate.set_wizard_open(true);
         let configurator = self.configurator.clone();
+        let read = self.preferred_languages.borrow().clone();
         let ui = Rc::downgrade(self);
         let gate = gate.clone();
         let window = window.clone();
@@ -1424,6 +1425,13 @@ impl BackendUi {
                 repository,
                 configurator,
                 desktop,
+                move || {
+                    read.unwrap_or_else(|| {
+                        myna_core::locale::preferred_languages(
+                            &myna_core::locale::SystemLocale::default(),
+                        )
+                    })
+                },
                 crate::onboarding_ui::Opener::Settings(window.upcast_ref()),
             );
             wizard.window().connect_close_request(move |_| {

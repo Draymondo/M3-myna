@@ -236,6 +236,8 @@ fn the_onboarding_wizard_walks_when_its_buttons_are_activated() {
         "onboarding-partial: a dismissed install prompt stops silently",
         "onboarding-partial: only the model installed, then moved on",
         "onboarding-optional: an unavailable extension holds nothing",
+        "onboarding-language: nothing offered before the language is read",
+        "onboarding-language: a Chinese desktop installs and connects FunASR",
         "onboarding-poll: found without focus",
         "onboarding-status: the download shown",
         "onboarding-snapd: waits for the install to finish",

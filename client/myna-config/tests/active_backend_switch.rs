@@ -852,7 +852,7 @@ fn an_auto_connected_backend_is_only_restarted() {
     let settled = block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &no_wait(),
         &unheard,
     ))
@@ -874,7 +874,7 @@ fn a_failed_restart_is_reported() {
     let error = block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &no_wait(),
         &unheard,
     ))
@@ -896,7 +896,7 @@ fn an_unconnected_machine_switches_to_the_preferred_backend() {
     block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &no_wait(),
         &unheard,
     ))
@@ -908,22 +908,26 @@ fn an_unconnected_machine_switches_to_the_preferred_backend() {
 
 #[test]
 fn without_the_preferred_backend_the_first_discovered_one_is_used() {
-    let initial = connections(&["myna-whisper"], &[]);
-    let connected = connections(&["myna-whisper"], &["myna-whisper"]);
-    let repository = FakeRepository::new([Ok(initial.clone()), Ok(initial.clone()), Ok(connected)]);
-    let plan = SwitchPlan::new(&initial, BackendIdentity::new("myna-whisper", "provider")).unwrap();
-    let configurator = FakeConfigurator::returning(Ok(success(&plan)));
+    for preferred in [Some("myna-parakeet"), None] {
+        let initial = connections(&["myna-whisper"], &[]);
+        let connected = connections(&["myna-whisper"], &["myna-whisper"]);
+        let repository =
+            FakeRepository::new([Ok(initial.clone()), Ok(initial.clone()), Ok(connected)]);
+        let plan =
+            SwitchPlan::new(&initial, BackendIdentity::new("myna-whisper", "provider")).unwrap();
+        let configurator = FakeConfigurator::returning(Ok(success(&plan)));
 
-    block_on(ensure_backend_active(
-        &repository,
-        &configurator,
-        "myna-parakeet",
-        &no_wait(),
-        &unheard,
-    ))
-    .unwrap();
+        block_on(ensure_backend_active(
+            &repository,
+            &configurator,
+            preferred,
+            &no_wait(),
+            &unheard,
+        ))
+        .unwrap();
 
-    assert_eq!(configurator.calls(), [plan.operations()]);
+        assert_eq!(configurator.calls(), [plan.operations()], "{preferred:?}");
+    }
 }
 
 #[test]
@@ -935,7 +939,7 @@ fn no_backend_and_failed_discovery_are_errors_without_privilege() {
         assert!(block_on(ensure_backend_active(
             &repository,
             &configurator,
-            "myna-parakeet",
+            Some("myna-parakeet"),
             &no_wait(),
             &unheard,
         ))
@@ -969,7 +973,7 @@ fn a_failed_or_contradicted_switch_is_reported() {
         block_on(ensure_backend_active(
             &repository,
             &denied,
-            "myna-parakeet",
+            Some("myna-parakeet"),
             &no_wait(),
             &unheard,
         )),
@@ -982,7 +986,7 @@ fn a_failed_or_contradicted_switch_is_reported() {
     let error = block_on(ensure_backend_active(
         &repository,
         &contradicted,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &no_wait(),
         &unheard,
     ))
@@ -1003,7 +1007,7 @@ fn a_switch_lost_to_discovery_or_cancellation_is_reported() {
     let lost = block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &no_wait(),
         &unheard,
     ))
@@ -1019,7 +1023,7 @@ fn a_switch_lost_to_discovery_or_cancellation_is_reported() {
     let cancelled = block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &no_wait(),
         &unheard,
     ))
@@ -1066,7 +1070,7 @@ fn an_auto_connection_is_restarted_only_once_its_change_is_done() {
     block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &wait,
         &unheard,
     ))
@@ -1102,7 +1106,7 @@ fn every_stage_is_reported_as_it_starts() {
     block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &no_wait(),
         &|stage| stages.borrow_mut().push(stage),
     ))
@@ -1135,7 +1139,7 @@ fn a_connected_backend_is_reported_as_restarting() {
     block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &no_wait(),
         &|stage| stages.borrow_mut().push(stage),
     ))
@@ -1168,7 +1172,7 @@ fn a_cancelled_wait_changes_nothing() {
     let error = block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &wait,
         &unheard,
     ))
@@ -1193,7 +1197,7 @@ fn a_connection_its_change_makes_meanwhile_is_not_made_again() {
     block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &no_wait(),
         &unheard,
     ))
@@ -1219,7 +1223,7 @@ fn changes_to_other_snaps_are_not_waited_for() {
     block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &wait,
         &unheard,
     ))
@@ -1237,7 +1241,7 @@ fn a_change_that_outlasts_the_wait_is_reported_without_a_restart() {
     let error = block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &no_wait(),
         &unheard,
     ))
@@ -1259,7 +1263,7 @@ fn unreadable_changes_are_reported_without_a_restart() {
     let failed = block_on(ensure_backend_active(
         &repository,
         &configurator,
-        "myna-parakeet",
+        Some("myna-parakeet"),
         &no_wait(),
         &unheard,
     ))

@@ -13,10 +13,6 @@ use crate::diagnostics::InstalledSnap;
 /// The client snap.
 pub const MYNA_SNAP: &str = "myna";
 
-/// The recommended backend. Its install hook selects an engine, which installs
-/// the matching model component, so a plain install is a working backend.
-pub const RECOMMENDED_BACKEND_SNAP: &str = "myna-parakeet";
-
 /// The GNOME Shell extension, as the myna-config deb (and Ubuntu's
 /// `gnome-shell-ubuntu-extensions` on Stonking) ships it.
 pub const SHELL_EXTENSION_UUID: &str = "myna-shell@canonical.com";
@@ -304,7 +300,9 @@ pub enum ExtensionReport {
     },
 }
 
-/// The model the wizard installs and what installing it downloads.
+/// The model the wizard installs and what installing it downloads. Its
+/// snap's install hook picks an engine and fetches that engine's model, so a
+/// plain install is a working backend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelOffer {
     pub family: ModelFamily,
@@ -344,9 +342,10 @@ const WHISPER_CUDA_BYTES: u64 = 795_668_480;
 const FUNASR_SNAP_BYTES: u64 = 70_057_984;
 const SENSEVOICE_BYTES: u64 = 239_083_520;
 
-/// Parakeet, the model the wizard installs, sized for the machine.
-pub fn model_offer(machine: &Machine) -> ModelOffer {
-    family_offer(ModelFamily::Parakeet, machine.nvidia_gpu)
+/// The family recommended for `preferred` languages, most preferred first,
+/// sized for the machine.
+pub fn model_offer<S: AsRef<str>>(preferred: &[S], nvidia_gpu: bool) -> ModelOffer {
+    family_offer(myna_core::language::recommend(preferred), nvidia_gpu)
 }
 
 /// `family`, sized for the engine its install hook will pick: with an
@@ -388,7 +387,6 @@ pub struct Machine {
     /// The input method, for a desktop that needs it set up; `None` where it
     /// is not Myna's to set up.
     pub input_method: Option<ComponentStatus>,
-    pub nvidia_gpu: bool,
 }
 
 impl Machine {
@@ -754,7 +752,7 @@ mod tests {
         );
         assert!(set_up_steps(&components, &[]).is_empty());
         assert_eq!(
-            installs(ComponentId::InputMethod, &model_offer(&ready())),
+            installs(ComponentId::InputMethod, &model_offer(&["en"], false)),
             None
         );
     }
@@ -1129,7 +1127,7 @@ mod tests {
 
     #[test]
     fn the_size_covers_only_the_snaps_still_missing() {
-        let cpu = model_offer(&Machine::default());
+        let cpu = model_offer(&["en"], false);
         let bare = assess(Machine::default());
         assert_eq!(
             remaining_download(&bare, &cpu),
@@ -1153,10 +1151,7 @@ mod tests {
             remaining_download(&with_extension(ComponentStatus::Inactive), &cpu),
             DownloadSize::Exact(0)
         );
-        let gpu = model_offer(&Machine {
-            nvidia_gpu: true,
-            ..Machine::default()
-        });
+        let gpu = model_offer(&["en"], true);
         assert_eq!(
             remaining_download(&bare, &gpu),
             DownloadSize::UpTo(MYNA_DOWNLOAD_BYTES + gpu.download_bytes)
@@ -1258,7 +1253,7 @@ mod tests {
 
     #[test]
     fn a_set_up_connects_the_model_it_installs() {
-        let offer = model_offer(&Machine::default());
+        let offer = model_offer(&["en"], false);
         assert_eq!(
             set_up_plan(
                 &[
@@ -1270,8 +1265,8 @@ mod tests {
             ),
             crate::ports::SetUpPlan {
                 flag: true,
-                installs: vec![MYNA_SNAP, RECOMMENDED_BACKEND_SNAP],
-                connect: Some(RECOMMENDED_BACKEND_SNAP),
+                installs: vec![MYNA_SNAP, "myna-parakeet"],
+                connect: Some("myna-parakeet"),
             }
         );
         // A model installed already is left to the setup after the run.
@@ -1335,14 +1330,8 @@ mod tests {
     fn the_model_size_is_an_upper_bound_only_with_an_nvidia_gpu() {
         // The install hook falls back to the CPU engine when the GPU has no
         // driver, so the GPU total is the most it downloads.
-        assert!(!model_offer(&Machine::default()).upper_bound);
-        assert!(
-            model_offer(&Machine {
-                nvidia_gpu: true,
-                ..Machine::default()
-            })
-            .upper_bound
-        );
+        assert!(!model_offer(&["en"], false).upper_bound);
+        assert!(model_offer(&["en"], true).upper_bound);
     }
 
     #[test]
@@ -1375,16 +1364,88 @@ mod tests {
     }
 
     #[test]
-    fn the_model_offer_is_parakeet_sized_for_the_engine_it_will_pick() {
-        let cpu = model_offer(&Machine::default());
-        assert_eq!(cpu.family, ModelFamily::Parakeet);
-        assert_eq!(cpu.snap(), RECOMMENDED_BACKEND_SNAP);
+    fn the_model_offer_is_the_family_best_for_the_first_language() {
+        use ModelFamily::{FunAsr, Parakeet, Whisper};
+        for (preferred, family) in [
+            (&["en_US"][..], Parakeet),
+            (&["zh_CN"], FunAsr),
+            (&["ja_JP"], FunAsr),
+            (&["ko_KR"], FunAsr),
+            (&["yue_HK"], FunAsr),
+            (&["cy_GB"], Whisper),
+            (&["cy", "en"], Whisper),
+        ] {
+            for nvidia_gpu in [false, true] {
+                assert_eq!(
+                    model_offer(preferred, nvidia_gpu),
+                    family_offer(family, nvidia_gpu),
+                    "{preferred:?}, GPU {nvidia_gpu}"
+                );
+            }
+        }
+        let cpu = model_offer(&["en"], false);
+        assert_eq!(cpu.snap(), "myna-parakeet");
         assert_eq!(cpu.download_bytes, 775_593_984);
-        let gpu = model_offer(&Machine {
-            nvidia_gpu: true,
-            ..Machine::default()
-        });
-        assert_eq!(gpu.download_bytes, 4_172_693_504);
+        assert_eq!(model_offer(&["en"], true).download_bytes, 4_172_693_504);
+        // FunASR has no GPU engine to size for.
+        let chinese = model_offer(&["zh_CN"], true);
+        assert_eq!(chinese.snap(), "myna-funasr");
+        assert_eq!(
+            (chinese.download_bytes, chinese.upper_bound),
+            (309_141_504, false)
+        );
+        assert_eq!(model_offer(&["cy"], false).snap(), "myna-whisper");
+    }
+
+    #[test]
+    fn the_session_s_first_language_picks_the_model() {
+        struct Session(&'static [&'static str], Option<&'static str>);
+        impl myna_core::locale::LocaleSource for Session {
+            fn language_names(&self) -> Vec<String> {
+                self.0.iter().map(|name| (*name).to_owned()).collect()
+            }
+            fn account_language(&self) -> Option<String> {
+                self.1.map(str::to_owned)
+            }
+        }
+        let offered = |session: Session| {
+            model_offer(&myna_core::locale::preferred_languages(&session), false).family
+        };
+        // LANGUAGE=cy:en is a Welsh speaker.
+        assert_eq!(
+            offered(Session(&["cy_GB.UTF-8", "cy_GB", "cy", "en", "C"], None)),
+            ModelFamily::Whisper
+        );
+        assert_eq!(
+            offered(Session(&["zh_CN.UTF-8", "zh_CN", "zh", "C"], None)),
+            ModelFamily::FunAsr
+        );
+        // LANG=C with no account language is English.
+        assert_eq!(offered(Session(&["C"], None)), ModelFamily::Parakeet);
+        assert_eq!(
+            offered(Session(&["C"], Some("ja_JP.UTF-8"))),
+            ModelFamily::FunAsr
+        );
+    }
+
+    #[test]
+    fn a_set_up_installs_and_connects_the_offered_family() {
+        for (preferred, snap) in [
+            ("en_US", "myna-parakeet"),
+            ("zh_CN", "myna-funasr"),
+            ("cy_GB", "myna-whisper"),
+        ] {
+            let offer = model_offer(&[preferred], false);
+            assert_eq!(
+                set_up_plan(&[ComponentId::Myna, ComponentId::Model], &offer),
+                crate::ports::SetUpPlan {
+                    flag: false,
+                    installs: vec![MYNA_SNAP, snap],
+                    connect: Some(snap),
+                },
+                "{preferred}"
+            );
+        }
     }
 
     #[test]
@@ -1429,14 +1490,14 @@ mod tests {
 
     #[test]
     fn only_the_app_and_the_model_are_installed_from_snapd() {
-        let offer = model_offer(&Machine::default());
+        let offer = model_offer(&["en"], false);
         assert_eq!(
             installs(ComponentId::Myna, &offer),
             Some((MYNA_SNAP, MYNA_DOWNLOAD_BYTES))
         );
         assert_eq!(
             installs(ComponentId::Model, &offer),
-            Some((RECOMMENDED_BACKEND_SNAP, offer.download_bytes))
+            Some(("myna-parakeet", offer.download_bytes))
         );
         assert_eq!(installs(ComponentId::UserDaemons, &offer), None);
         assert_eq!(installs(ComponentId::StatusSurface, &offer), None);

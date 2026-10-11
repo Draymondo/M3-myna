@@ -315,14 +315,14 @@ pub enum Settled {
 }
 
 /// Leave dictation running on a backend. With none connected, switch to
-/// `preferred`, or the first discovered backend without it; the switch
+/// `preferred`, or the first discovered backend without it or with none; the switch
 /// restarts Myna. With one connected, only restart, because the daemon may
 /// have started before the backend was installed. `report` hears each
 /// stage as it starts; a wait cancelled before it ends changes nothing.
 pub async fn ensure_backend_active(
     repository: &dyn BackendRepository,
     configurator: &dyn SystemConfigurator,
-    preferred: &str,
+    preferred: Option<&str>,
     wait: &SnapdWait<'_>,
     report: &dyn Fn(SetupStage),
 ) -> Result<Settled, SetupError> {
@@ -360,7 +360,7 @@ pub async fn ensure_backend_active(
     let backends = snapshot.backends();
     let Some(selected) = backends
         .iter()
-        .find(|backend| backend.snap_name() == preferred)
+        .find(|backend| Some(backend.snap_name()) == preferred)
         .or_else(|| backends.first())
         .cloned()
     else {
