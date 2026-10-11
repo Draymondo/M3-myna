@@ -75,8 +75,8 @@ Export recipe (NeMo 3.0.0, inference is torch-free):
   `valid_out_len`; the inference loop follows NeMo's
   `pad_and_drop_preencoded` semantics and flushes with one chunk of silence
   appended after the real audio.
-- Recipe script: `dev/eval/export_nemotron35_onnx.py` (moved out of the
-  workstream scratch directory; run manually, not gated by `make check`).
+- Recipe script: deleted 2026-10-11 with the evaluation parked; recover it
+  with `git log --diff-filter=D -- dev/eval/export_nemotron35_onnx.py`.
 
 Accuracy, 2026-09-17:
 
@@ -105,7 +105,8 @@ see `server/.kb/benchmarking.md`.
   Nemotron's advantages are native streaming (~1.1 s chunk-to-commit, no
   VAD-driven windowing) and language coverage (ar/ja/zh/hi/ko, which
   Parakeet v3 lacks).
-- If revived: move the remaining scratch scripts (streaming inference loop,
-  int8 quantization, FLEURS harness, NeMo reference runner) into `dev/eval/`
-  beside `export_nemotron35_onnx.py`, each with its own PEP 723 metadata;
-  never add nemo/torch to `server/uv.lock`.
+- If revived: restore the recipe script, lock it (`uv lock --script`) with
+  the fsspec override `dev/parakeet/export_parakeet_onnx.py` carries, and
+  bring the scratch scripts (streaming inference loop, int8 quantization,
+  FLEURS harness, NeMo reference runner) beside it, each with its own PEP 723
+  metadata; never add nemo/torch to `server/uv.lock`.
