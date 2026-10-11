@@ -20,6 +20,9 @@ jobs:
           cache: |
             rust:cargo-registry
             venv:uv-cache
+      # Where the launch's time went, task by task (the action prints none).
+      - if: always()
+        run: workshop tasks || true
 
       - name: Advisory audits (cargo audit + pip-audit)
         run: make audit

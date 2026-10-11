@@ -45,6 +45,9 @@ jobs:
         with:
           workshop: ${{ matrix.workshop }}
           cache: ${{ matrix.cache }}
+      # Where the launch's time went, task by task (the action prints none).
+      - if: always()
+        run: workshop tasks || true
       - run: make ${{ matrix.gate }}
 
   # Static GNOME extension review with shexli. This deliberately does not use
@@ -113,6 +116,9 @@ jobs:
           cache: |
             rust:cargo-registry
             venv:uv-cache
+      # Where the launch's time went, task by task (the action prints none).
+      - if: always()
+        run: workshop tasks || true
 
       # The `myna` workshop's half of `make test` runs here instrumented:
       # corpus, cov-client, cov-server, cov-extension, exercise, deadcode,

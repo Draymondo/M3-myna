@@ -135,6 +135,9 @@ jobs:
         with:
           workshop: myna-noble
           cache: rust:cargo-registry
+      # Where the launch's time went, task by task (the action prints none).
+      - if: always()
+        run: workshop tasks || true
       # setup-lxd's pool is `dir`, where each suite's snapshot copy is a full
       # 20 GB disk copy; btrfs makes it copy-on-write.
       - run: lxc storage create e2e btrfs size=60GiB
