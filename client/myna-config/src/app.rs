@@ -367,6 +367,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(ProbeMachine::new()),
             ProbeExtensions::new(ComponentStatus::Active),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -581,6 +582,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Active),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -691,6 +693,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Active),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -732,6 +735,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Active),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -776,6 +780,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Unavailable),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -828,6 +833,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Active),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -906,6 +912,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(ProbeMachine::new()),
             ProbeExtensions::new(ComponentStatus::Active),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -954,6 +961,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Active),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -1045,6 +1053,7 @@ fn onboarding_probe() -> glib::ExitCode {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Active),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -1237,6 +1246,7 @@ fn onboarding_probe() -> glib::ExitCode {
         )),
         Rc::new(machine.clone()),
         ProbeExtensions::new(ComponentStatus::Active),
+        None,
         probe_languages,
         crate::onboarding_ui::Opener::Settings(settings.upcast_ref()),
     )
@@ -1827,6 +1837,7 @@ fn onboarding_control_probe() -> glib::ExitCode {
                 )),
                 Rc::new(machine),
                 ProbeExtensions::new(ComponentStatus::Active),
+                None,
                 probe_languages,
                 crate::onboarding_ui::Opener::FirstRun,
             );
@@ -2045,6 +2056,7 @@ fn onboarding_control_probe() -> glib::ExitCode {
         )),
         Rc::new(ProbeMachine::new()),
         ProbeExtensions::new(ComponentStatus::Active),
+        None,
         probe_languages,
         crate::onboarding_ui::Opener::FirstRun,
     )
@@ -4071,6 +4083,7 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
             )),
             Rc::new(machine.clone()),
             extensions.clone(),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -4428,6 +4441,7 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Unavailable),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -4500,6 +4514,7 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
             )),
             Rc::new(machine.clone()),
             extensions.clone(),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -4604,6 +4619,7 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
             )),
             Rc::new(machine.clone()),
             extensions.clone(),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -4654,6 +4670,7 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
             )),
             Rc::new(machine.clone()),
             extensions.clone(),
+            None,
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
@@ -4748,6 +4765,7 @@ fn probe_language(application: &adw::Application) -> Result<(), String> {
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ComponentStatus::Unavailable),
+            None,
             move || {
                 let _ = question.recv();
                 vec!["zh_CN".to_owned(), "en".to_owned()]
@@ -4815,7 +4833,106 @@ fn probe_language(application: &adw::Application) -> Result<(), String> {
     println!("onboarding-language: a Chinese desktop installs and connects FunASR");
     window.close();
     settle_gtk();
+
+    let machine = ProbeMachine::myna_only();
+    let store = Rc::new(ProbeSettings::default());
+    let window = crate::onboarding_ui::OnboardingUi::present_with_ports(
+        application,
+        initial.clone(),
+        Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+            std::sync::Arc::new(machine.clone()),
+            std::sync::Arc::new(machine.clone()),
+        )),
+        Rc::new(machine.clone()),
+        ProbeExtensions::new(ComponentStatus::Unavailable),
+        Some(store.clone() as Rc<dyn crate::ports::ClientSettings>),
+        || vec!["hi_IN".to_owned()],
+        crate::onboarding_ui::Opener::FirstRun,
+    )
+    .window();
+    settle_gtk();
+    window.forward_button().emit_clicked();
+    settle_gtk();
+    let page = components_page(&window).ok_or("the component step shows no component page")?;
+    let button = page.install_button();
+    if !until(&|| button.is_sensitive()) {
+        return Err("a Hindi desktop's step never offers its model".to_owned());
+    }
+    button.emit_clicked();
+    let reached = || {
+        window
+            .navigation()
+            .visible_page()
+            .and_then(|page| page.tag())
+            .is_some_and(|tag| tag == "shortcut")
+    };
+    if !until(&reached)
+        || machine
+            .set_up_plans()
+            .iter()
+            .map(|plan| plan.connect)
+            .collect::<Vec<_>>()
+            != [Some("myna-whisper")]
+        || *store.language.borrow() != Some("hi".to_owned())
+    {
+        return Err(format!(
+            "a Hindi desktop set up {:?}, spoken language {:?}",
+            machine.set_up_plans(),
+            store.language.borrow()
+        ));
+    }
+    println!("onboarding-language: a Hindi desktop installs Whisper and sets it to Hindi");
+    window.close();
+    settle_gtk();
     Ok(())
+}
+
+/// The dictation settings store, holding only the spoken language.
+#[derive(Default)]
+struct ProbeSettings {
+    language: RefCell<Option<String>>,
+}
+
+impl crate::ports::ClientSettings for ProbeSettings {
+    fn list(
+        &self,
+    ) -> Result<Vec<crate::domain::ClientSettingMetadata>, crate::ports::ClientSettingsError> {
+        Ok(Vec::new())
+    }
+
+    fn get(
+        &self,
+        _key: &str,
+    ) -> Result<crate::domain::ClientSettingValue, crate::ports::ClientSettingsError> {
+        Ok(crate::domain::ClientSettingValue::Text(
+            self.language.borrow().clone().unwrap_or_default(),
+        ))
+    }
+
+    fn set(
+        &self,
+        _key: &str,
+        value: crate::domain::ClientSettingValue,
+    ) -> Result<(), crate::ports::ClientSettingsError> {
+        if let crate::domain::ClientSettingValue::Text(language) = value {
+            self.language.replace(Some(language));
+        }
+        Ok(())
+    }
+
+    fn has_user_value(&self, _key: &str) -> Result<bool, crate::ports::ClientSettingsError> {
+        Ok(self.language.borrow().is_some())
+    }
+
+    fn subscribe(
+        &self,
+        _callback: crate::ports::ClientSettingsCallback,
+    ) -> Result<Box<dyn crate::ports::ClientSettingsSubscription>, crate::ports::ClientSettingsError>
+    {
+        Err(crate::ports::ClientSettingsError::StoreUnavailable {
+            message: "the probe store has no subscriptions".to_owned(),
+        })
+    }
 }
 
 /// Whether the last step shows its note to log out and back in.

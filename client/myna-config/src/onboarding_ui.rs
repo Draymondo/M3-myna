@@ -25,11 +25,13 @@ use crate::domain::BackendSurfaceError;
 use crate::onboarding::{
     assess, can_advance, completes, failed_set_up_step, flag_enabled, forward_leads,
     input_method_missing, install_view, installs, model_offer, needs_onboarding, next_install,
-    polls, relogin_pending, remaining_download, set_up_plan, set_up_steps, settled,
-    while_installing, Component, ComponentId, ComponentState, DownloadSize, InstallView, Machine,
-    ModelOffer, Step,
+    polls, relogin_pending, remaining_download, seed_spoken_language, set_up_plan, set_up_steps,
+    settled, spoken_language, while_installing, Component, ComponentId, ComponentState,
+    DownloadSize, InstallView, Machine, ModelOffer, Step,
 };
-use crate::ports::{BackendRepository, SystemConfigurator, SystemConfiguratorError};
+use crate::ports::{
+    BackendRepository, ClientSettings, SystemConfigurator, SystemConfiguratorError,
+};
 use crate::shortcut_ui::set_class;
 use crate::snap_changes::{pending_install, ApplyProgress};
 use crate::snap_install::{follow_change, Follow};
@@ -93,6 +95,9 @@ pub struct OnboardingUi {
     /// The user's languages, most preferred first, once read: the model
     /// offered is the one recommended for them.
     languages: RefCell<Option<Vec<String>>>,
+    /// Where the spoken language is set once Whisper is installed; absent
+    /// when the store cannot be opened.
+    settings: Option<Rc<dyn ClientSettings>>,
     /// Why the last assessment could not read the machine.
     problem: RefCell<Option<String>>,
     busy: Cell<bool>,
@@ -136,6 +141,7 @@ impl OnboardingUi {
             )),
             Rc::new(PkexecSystemConfigurator::new(runner)),
             crate::platform::Platform::current().components(),
+            open_settings(),
             || myna_core::locale::preferred_languages(&myna_core::locale::SystemLocale::default()),
             Opener::FirstRun,
         )
@@ -152,6 +158,7 @@ impl OnboardingUi {
         repository: Rc<dyn BackendRepository>,
         configurator: Rc<dyn SystemConfigurator>,
         desktop: Rc<dyn Components>,
+        settings: Option<Rc<dyn ClientSettings>>,
         languages: impl FnOnce() -> Vec<String> + Send + 'static,
         opener: Opener,
     ) -> Rc<Self> {
@@ -207,6 +214,7 @@ impl OnboardingUi {
             components: RefCell::new(initial),
             nvidia_gpu: crate::machine::has_nvidia_gpu(),
             languages: RefCell::default(),
+            settings,
             problem: RefCell::default(),
             busy: Cell::new(false),
             running: Cell::new(false),
@@ -389,6 +397,24 @@ impl OnboardingUi {
                 ui.render();
             }
         });
+    }
+
+    /// After installing `offer`, tell Whisper the language to decode in,
+    /// unless the user chose one.
+    fn seed_spoken_language(&self, offer: &ModelOffer) {
+        let language = self
+            .languages
+            .borrow()
+            .as_deref()
+            .and_then(|languages| spoken_language(offer, languages));
+        let (Some(language), Some(settings)) = (language, &self.settings) else {
+            return;
+        };
+        match seed_spoken_language(settings.as_ref(), &language) {
+            Ok(true) => self.log(&format!("spoken language: set to {language}")),
+            Ok(false) => self.log("spoken language: kept the user's choice"),
+            Err(error) => self.log(&format!("spoken language: not set: {error}")),
+        }
     }
 
     /// The components as the step shows them: one snapd is still
@@ -1135,6 +1161,7 @@ async fn set_up_step(
         .filter_map(|id| installs(*id, &offer).map(|(snap, bytes)| (*id, snap, bytes)))
         .collect();
     let plan = set_up_plan(steps, &offer);
+    let installs_model = plan.connect.is_some();
     strong.log(&format!("set-up: {plan:?} under one prompt"));
     let configurator = strong.configurator.clone();
     let cancellation = strong.install_cancellation.clone();
@@ -1202,6 +1229,9 @@ async fn set_up_step(
         (failed, error)
     })?;
     ui.log("set-up: done");
+    if installs_model {
+        ui.seed_spoken_language(&offer);
+    }
     Ok(())
 }
 
@@ -1236,6 +1266,13 @@ pub async fn assess_machine(
     let found = problem.unwrap_or_else(|| describe(&components));
     glib::g_message!(crate::LOG_DOMAIN, "onboarding assessment: {found}");
     components
+}
+
+/// The dictation settings store, as Myna Settings opens it.
+pub(crate) fn open_settings() -> Option<Rc<dyn ClientSettings>> {
+    crate::adapters::client_settings::GioClientSettings::open()
+        .ok()
+        .map(|settings| Rc::new(settings) as Rc<dyn ClientSettings>)
 }
 
 /// What one read finds: the components and what it could not read.

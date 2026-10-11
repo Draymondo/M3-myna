@@ -348,6 +348,32 @@ pub fn model_offer<S: AsRef<str>>(preferred: &[S], nvidia_gpu: bool) -> ModelOff
     family_offer(myna_core::language::recommend(preferred), nvidia_gpu)
 }
 
+/// The spoken language to set once `offer` is installed: the user's first
+/// language, when the family decodes in a set language and covers it.
+pub fn spoken_language<S: AsRef<str>>(offer: &ModelOffer, preferred: &[S]) -> Option<String> {
+    let family = offer.family;
+    let language = myna_core::language::user_language(preferred)?;
+    (family.takes_spoken_language() && family.languages().contains(&language.as_str()))
+        .then_some(language)
+}
+
+/// Set `language` as the spoken language unless the user chose one; whether
+/// it was set.
+pub fn seed_spoken_language(
+    settings: &dyn crate::ports::ClientSettings,
+    language: &str,
+) -> Result<bool, crate::ports::ClientSettingsError> {
+    use myna_core::settings::KEY_LANGUAGE;
+    if settings.has_user_value(KEY_LANGUAGE)? {
+        return Ok(false);
+    }
+    settings.set(
+        KEY_LANGUAGE,
+        crate::domain::ClientSettingValue::Text(language.to_owned()),
+    )?;
+    Ok(true)
+}
+
 /// `family`, sized for the engine its install hook will pick: with an
 /// NVIDIA GPU, Parakeet fetches the CUDA runtime and the fp32 model instead
 /// of int8, and Whisper its CUDA runtime and the small model instead of base.
@@ -1395,6 +1421,77 @@ mod tests {
             (309_141_504, false)
         );
         assert_eq!(model_offer(&["cy"], false).snap(), "myna-whisper");
+    }
+
+    #[test]
+    fn whisper_is_told_the_language_it_was_installed_for() {
+        let spoken =
+            |preferred: &[&str]| spoken_language(&model_offer(preferred, false), preferred);
+        assert_eq!(spoken(&["hi_IN"]).as_deref(), Some("hi"));
+        assert_eq!(spoken(&["cy_GB", "en"]).as_deref(), Some("cy"));
+        // glibc's Norwegian Bokmål is Whisper's "no".
+        assert_eq!(spoken(&["nb_NO"]).as_deref(), Some("no"));
+        // Parakeet and FunASR detect the language themselves.
+        assert_eq!(spoken(&["en_US"]), None);
+        assert_eq!(spoken(&["zh_CN"]), None);
+        // Whisper is the fallback for a language it cannot transcribe either.
+        assert_eq!(model_offer(&["xh_ZA"], false).family, ModelFamily::Whisper);
+        assert_eq!(spoken(&["xh_ZA"]), None);
+    }
+
+    #[test]
+    fn a_spoken_language_the_user_chose_is_kept() {
+        use crate::domain::ClientSettingValue;
+        use crate::ports::{ClientSettings, ClientSettingsError};
+        use myna_core::settings::KEY_LANGUAGE;
+        #[derive(Default)]
+        struct Store(std::cell::RefCell<Option<ClientSettingValue>>);
+        impl ClientSettings for Store {
+            fn list(
+                &self,
+            ) -> Result<Vec<crate::domain::ClientSettingMetadata>, ClientSettingsError>
+            {
+                Ok(Vec::new())
+            }
+            fn get(&self, _key: &str) -> Result<ClientSettingValue, ClientSettingsError> {
+                Ok(self
+                    .0
+                    .borrow()
+                    .clone()
+                    .unwrap_or(ClientSettingValue::Text(String::new())))
+            }
+            fn set(&self, key: &str, value: ClientSettingValue) -> Result<(), ClientSettingsError> {
+                assert_eq!(key, KEY_LANGUAGE);
+                self.0.replace(Some(value));
+                Ok(())
+            }
+            fn has_user_value(&self, key: &str) -> Result<bool, ClientSettingsError> {
+                assert_eq!(key, KEY_LANGUAGE);
+                Ok(self.0.borrow().is_some())
+            }
+            fn subscribe(
+                &self,
+                _callback: crate::ports::ClientSettingsCallback,
+            ) -> Result<Box<dyn crate::ports::ClientSettingsSubscription>, ClientSettingsError>
+            {
+                unreachable!()
+            }
+        }
+        let unset = Store::default();
+        assert_eq!(seed_spoken_language(&unset, "hi"), Ok(true));
+        assert_eq!(
+            unset.get(KEY_LANGUAGE),
+            Ok(ClientSettingValue::Text("hi".to_owned()))
+        );
+        // Even an empty choice is the user's: "let the model decide".
+        let chosen = Store(std::cell::RefCell::new(Some(ClientSettingValue::Text(
+            String::new(),
+        ))));
+        assert_eq!(seed_spoken_language(&chosen, "hi"), Ok(false));
+        assert_eq!(
+            chosen.get(KEY_LANGUAGE),
+            Ok(ClientSettingValue::Text(String::new()))
+        );
     }
 
     #[test]

@@ -1425,6 +1425,7 @@ impl BackendUi {
                 repository,
                 configurator,
                 desktop,
+                crate::onboarding_ui::open_settings(),
                 move || {
                     read.unwrap_or_else(|| {
                         myna_core::locale::preferred_languages(

@@ -149,7 +149,10 @@ arrives the button is insensitive and shows no size: nothing installs a
 guessed model. The model's share is its snap and CPU model, or, with an
 NVIDIA GPU, the CUDA runtime and the GPU model, said as "Up to" because the
 install hook falls back to the CPU engine when the GPU has no driver; FunASR
-has a CPU engine only. The flag and the extension download nothing, so
+has a CPU engine only. Once a set-up has installed Whisper, the wizard sets
+the spoken language to the user's first language when Whisper covers it and
+the user has not chosen one (`onboarding::spoken_language`): Whisper decodes
+in a set language, and left to detect it, a small model guesses wrong. The flag and the extension download nothing, so
 a machine missing only those shows no size. The sizes are fixed per store
 revision in `onboarding.rs`, not read from the store. The button carries the
 same size as its accessible description, so a screen reader speaks it after the
