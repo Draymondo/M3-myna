@@ -330,13 +330,13 @@ pub const MYNA_DOWNLOAD_BYTES: u64 = 10_133_504;
 
 // What each family's store install downloads on latest/edge, snap and the
 // components its install hook fetches, as the store listed them on
-// 2026-09-30.
+// 2026-09-30 (Whisper's base model on 2026-10-11).
 const PARAKEET_SNAP_BYTES: u64 = 46_194_688;
 const PARAKEET_INT8_BYTES: u64 = 729_399_296;
 const PARAKEET_FP32_BYTES: u64 = 2_549_030_912;
 const ONNXRUNTIME_CUDA_BYTES: u64 = 1_577_467_904;
 const WHISPER_SNAP_BYTES: u64 = 121_798_656;
-const WHISPER_TINY_BYTES: u64 = 76_279_808;
+const WHISPER_BASE_BYTES: u64 = 145_858_560;
 const WHISPER_SMALL_BYTES: u64 = 483_966_976;
 const WHISPER_CUDA_BYTES: u64 = 795_668_480;
 const FUNASR_SNAP_BYTES: u64 = 70_057_984;
@@ -350,7 +350,7 @@ pub fn model_offer<S: AsRef<str>>(preferred: &[S], nvidia_gpu: bool) -> ModelOff
 
 /// `family`, sized for the engine its install hook will pick: with an
 /// NVIDIA GPU, Parakeet fetches the CUDA runtime and the fp32 model instead
-/// of int8, and Whisper its CUDA runtime and the small model instead of tiny.
+/// of int8, and Whisper its CUDA runtime and the small model instead of base.
 /// FunASR has one CPU engine.
 pub fn family_offer(family: ModelFamily, nvidia_gpu: bool) -> ModelOffer {
     let (snap, cpu, gpu) = match family {
@@ -361,7 +361,7 @@ pub fn family_offer(family: ModelFamily, nvidia_gpu: bool) -> ModelOffer {
         ),
         ModelFamily::Whisper => (
             WHISPER_SNAP_BYTES,
-            WHISPER_TINY_BYTES,
+            WHISPER_BASE_BYTES,
             Some(WHISPER_CUDA_BYTES + WHISPER_SMALL_BYTES),
         ),
         ModelFamily::FunAsr => (FUNASR_SNAP_BYTES, SENSEVOICE_BYTES, None),
@@ -1464,7 +1464,7 @@ mod tests {
         );
         assert_eq!(
             sizes(ModelFamily::Whisper),
-            ((198_078_464, false), (1_401_434_112, true))
+            ((267_657_216, false), (1_401_434_112, true))
         );
         assert_eq!(
             sizes(ModelFamily::FunAsr),

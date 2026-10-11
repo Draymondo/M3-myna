@@ -15,7 +15,7 @@ devices:
 runtime: faster-whisper-cpu
 
 model:
-  default: tiny
+  default: base
   options:
     - tiny
     - base

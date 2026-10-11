@@ -34,7 +34,7 @@ modelctl set --package streaming="false"
 # so fall back to cpu by name: a snap with no active engine has a daemon that
 # exits on every start, and connect-plug-hardware-observe re-selects later.
 #
-# The cpu engine's default model (tiny) needs the store, which a sideload or
+# The cpu engine's default model (base) needs the store, which a sideload or
 # an offline machine cannot reach, and a failing hook fails the whole install.
 # modelctl keeps the active model when the engine offers it, so seed the first
 # installed one, default first.

@@ -19,7 +19,7 @@ Caveats the table does not show:
 
 - myna-funasr ships SenseVoice-Small, not Fun-ASR-Nano. The released Small checkpoint covers only zh, en, yue, ja and ko; the "50+ languages" on its card belong to the unreleased Large.
 - zh_TW goes to FunASR although SenseVoice writes Simplified script. Whether Traditional-script users are better served by Whisper with a language hint is untested.
-- The Whisper figures are for small, the GPU default; CPU users get tiny, which is worse, so the table flatters Whisper for them.
+- The Whisper figures are for small, the GPU default; CPU users get base, which is worse, so the table flatters Whisper for them.
 
 # Important
 

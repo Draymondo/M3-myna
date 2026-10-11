@@ -4257,7 +4257,7 @@ mod tests {
     fn the_install_dialog_offers_the_missing_families_recommended_first() {
         on_gtk_thread(|| {
             let whisper = format!(
-                "{}\u{a0}·\u{a0}198\u{a0}MB",
+                "{}\u{a0}·\u{a0}268\u{a0}MB",
                 gettextrs::gettext("Most languages, with uneven accuracy")
             );
             let funasr = format!(
@@ -4338,7 +4338,7 @@ mod tests {
         let whisper = family_offer(myna_core::language::ModelFamily::Whisper, false);
         assert_eq!(
             offer_subtitle(Some("Most languages, with uneven accuracy"), whisper),
-            "Most languages, with uneven accuracy\u{a0}·\u{a0}198\u{a0}MB"
+            "Most languages, with uneven accuracy\u{a0}·\u{a0}268\u{a0}MB"
         );
         let gpu = family_offer(myna_core::language::ModelFamily::Whisper, true);
         assert_eq!(offer_subtitle(None, gpu), "up to 1.4\u{a0}GB");

@@ -376,7 +376,7 @@ case " $* " in *" --stderr "*) cat >&2 ;; *) cat >/dev/null ;; esac
 
 
 def test_a_sideload_without_the_default_model_keeps_an_installed_one(tmp_path: Path) -> None:
-    """A sideload cannot fetch the cpu engine's default (tiny) from the store,
+    """A sideload cannot fetch the cpu engine's default (base) from the store,
     and the hook failing would fail the whole install."""
     ran = _run_install_hook("whisper-snap", tmp_path, components=["model-small"])
     engine = ran.index("modelctl use-engine cpu --assume-yes --no-restart")
@@ -384,8 +384,8 @@ def test_a_sideload_without_the_default_model_keeps_an_installed_one(tmp_path: P
 
 
 def test_the_default_model_wins_when_it_is_installed(tmp_path: Path) -> None:
-    ran = _run_install_hook("whisper-snap", tmp_path, components=["model-small", "model-tiny"])
-    assert "snapctl set cache.active-model=tiny" in ran, ran
+    ran = _run_install_hook("whisper-snap", tmp_path, components=["model-tiny", "model-base"])
+    assert "snapctl set cache.active-model=base" in ran, ran
 
 
 def test_declares_every_engine_it_ships(snap) -> None:
