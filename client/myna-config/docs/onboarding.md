@@ -139,10 +139,17 @@ leads. The components are not
 listed one by one. Below the button a dimmed line sizes what installing
 downloads (`onboarding::remaining_download`): the snaps still missing, in
 whole megabytes from 100 MB to 1 GB, where a decimal is noise. The app's
-share is the store's size of the `myna` snap; the model's is the snap and
-the int8 model, or, with an NVIDIA GPU, the CUDA runtime and the fp32
-model, said as "Up to" because the install hook falls back to the CPU engine
-when the GPU has no driver. The flag and the extension download nothing, so
+share is the store's size of the `myna` snap. The model is the family
+recommended for the user's first language over every known family
+(`onboarding::model_offer`, `client/.kb/model-recommendation.md`): Parakeet
+for English, FunASR for Chinese, Cantonese, Japanese and Korean, Whisper
+for a language neither covers. The language is read off the main thread,
+since under `LANG=C` it asks AccountsService on the system bus, and until it
+arrives the button is insensitive and shows no size: nothing installs a
+guessed model. The model's share is its snap and CPU model, or, with an
+NVIDIA GPU, the CUDA runtime and the GPU model, said as "Up to" because the
+install hook falls back to the CPU engine when the GPU has no driver; FunASR
+has a CPU engine only. The flag and the extension download nothing, so
 a machine missing only those shows no size. The sizes are fixed per store
 revision in `onboarding.rs`, not read from the store. The button carries the
 same size as its accessible description, so a screen reader speaks it after the
@@ -281,7 +288,8 @@ reach does not hold that move. Only those transitions count: opening the
 step with everything already installed waits for Next, so a re-run of the
 wizard does not rush past it, and so does a disabled extension found elsewhere
 to be the last piece. Next during the pause moves on at once without
-setting up again. A run that installed the model
+setting up again. With no backend connected, the switch prefers the
+offered model among those installed. A run that installed the model
 connected it, so the step only restarts; otherwise snapd's base
 declaration usually auto-connected it (both snaps share a publisher), and
 the switch below connects it as the user if not.
