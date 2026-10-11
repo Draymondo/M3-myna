@@ -157,12 +157,12 @@ def is_checked(spec):
         return False
 
 
-def window_origin():
-    """Root coordinates of the app's content origin, which AT-SPI extents
+def window_content():
+    """Root coordinates and size of the app's content, which AT-SPI extents
     (CoordType.WINDOW) are relative to. Under a compositing window manager GTK
     draws its shadow inside the X window and says how wide it is in
     _GTK_FRAME_EXTENTS (left, right, top, bottom); with none the property is
-    absent and the content starts at the window's corner."""
+    absent and the content fills the window."""
     wid = subprocess.run(
         ["xdotool", "search", "--sync", "--onlyvisible", "--pid", str(PID)],
         capture_output=True,
@@ -179,22 +179,63 @@ def window_origin():
     shadow = subprocess.run(
         ["xprop", "-id", wid, "_GTK_FRAME_EXTENTS"], capture_output=True, text=True
     ).stdout
-    left = top = 0
+    left = right = top = bottom = 0
     if "=" in shadow:
-        left, _right, top, _bottom = (int(v) for v in shadow.split("=", 1)[1].split(","))
-    return int(vals["X"]) + left, int(vals["Y"]) + top
+        left, right, top, bottom = (int(v) for v in shadow.split("=", 1)[1].split(","))
+    return (
+        int(vals["X"]) + left,
+        int(vals["Y"]) + top,
+        int(vals["WIDTH"]) - left - right,
+        int(vals["HEIGHT"]) - top - bottom,
+    )
 
 
 def x_click(node):
-    try:
-        ext = node.get_extents(Atspi.CoordType.WINDOW)
-    except Exception:
-        ext = None
-    if ext is None or ext.width <= 0 or ext.height <= 0:
+    """A real click at the widget's centre, scrolled into the window first: on
+    a small screen a widget can sit below the window's visible content, and a
+    click at its coordinates would land on whatever is underneath."""
+
+    def centre():
+        try:
+            ext = node.get_extents(Atspi.CoordType.WINDOW)
+        except Exception:
+            return None
+        if ext is None or ext.width <= 0 or ext.height <= 0:
+            return None
+        return ext.x + ext.width // 2, ext.y + ext.height // 2
+
+    if (at := centre()) is None:
         return False
-    ox, oy = window_origin()
-    x, y = ox + ext.x + ext.width // 2, oy + ext.y + ext.height // 2
-    subprocess.run(["xdotool", "mousemove", "--sync", str(x), str(y), "click", "1"], check=True)
+    ox, oy, width, height = window_content()
+    for _ in range(40):
+        cx, cy = at
+        if 0 <= cx < width and 0 <= cy < height:
+            break
+        # Wheel over the content, in the target's column, towards it.
+        x = ox + min(max(cx, 1), width - 1)
+        subprocess.run(
+            [
+                "xdotool",
+                "mousemove",
+                "--sync",
+                str(x),
+                str(oy + height // 2),
+                "click",
+                "5" if cy >= height else "4",
+            ],
+            check=True,
+        )
+        time.sleep(0.1)
+        if (at := centre()) is None:
+            return False
+    else:
+        sys.exit(
+            f"shot-driver: {name_of(node)!r} stays outside the window ({at} in {width}x{height})"
+        )
+    cx, cy = at
+    subprocess.run(
+        ["xdotool", "mousemove", "--sync", str(ox + cx), str(oy + cy), "click", "1"], check=True
+    )
     return True
 
 
