@@ -1,3 +1,21 @@
+myna-config (0.2.2-0ubuntu1) stonking; urgency=medium
+
+  * Xubuntu support: Myna Settings sets up IBus and the dictation
+    shortcut through Xfce's own settings, the dictation indicator runs
+    on X11, and Settings follows a dark Xfce theme.
+  * Setup recognises an installed machine on non-English desktops (#40,
+    #50).
+  * Setup recommends and installs the model for your language, and sets
+    Whisper's spoken language to match.
+  * Holding the dictation shortcut toggles once, and the first dictation
+    after IBus starts finds the text field.
+  * A missing IBus is reported in Diagnostics and Setup says why it
+    cannot continue; recommend ibus and im-config.
+  * A shortcut conflict names the application holding the key, not its
+    command.
+
+ -- Charles <charles05@canonical.com>  Mon, 12 Oct 2026 00:25:05 +0100
+
 myna-config (0.2.1-0ubuntu1) stonking; urgency=medium
 
   * Setup speaks to screen readers: the download size, each install step,
