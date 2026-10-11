@@ -311,12 +311,17 @@ impl X11Host {
         };
         self.conn
             .configure_window(self.xid, &ConfigureWindowAux::new().x(at.x).y(at.y))?;
+        let hints = self.cardinals(
+            self.xid,
+            AtomEnum::WM_NORMAL_HINTS.into(),
+            AtomEnum::WM_SIZE_HINTS.into(),
+        )?;
         self.conn.change_property32(
             PropMode::REPLACE,
             self.xid,
             AtomEnum::WM_NORMAL_HINTS,
             AtomEnum::WM_SIZE_HINTS,
-            &ewmh::position_hints(at),
+            &ewmh::with_position(&hints, at),
         )?;
         // Processed before GDK's map request, which is still to be sent.
         self.conn.sync()?;
@@ -359,7 +364,8 @@ impl X11Host {
         self.place_mapped()
     }
 
-    /// Move the mapped window to its target if it is not there.
+    /// Move the mapped window to its target if it is not there. The target
+    /// is for the size GTK is giving it, which the server's geometry lags.
     fn place_mapped(&self) -> XResult<()> {
         let geometry = self.conn.get_geometry(self.xid)?.reply()?;
         let size = Size {

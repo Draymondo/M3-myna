@@ -200,19 +200,37 @@ impl HudWindow {
             // Already mapped, or a fade-out reversed mid-flight - let the CSS
             // transition take it back to resting opacity.
             widget.remove_css_class(FADE_HIDDEN_CLASS);
-        } else {
-            // Map at opacity 0, then drop the class on the next frame so the
-            // transition actually fades it in rather than popping at 1.
-            widget.add_css_class(FADE_HIDDEN_CLASS);
-            if let Some(host) = self.host.borrow().as_ref() {
-                host.before_map();
+        } else if let Some(host) = self.host.borrow().clone() {
+            // GDK sizes a hidden surface for its new content only when asked,
+            // in an idle of its own: map after it. Mapped first, the window
+            // shows at the old size and is resized after, and a window
+            // manager's reply to the map can complete that resize at the old
+            // size, laying the new content out in too little room.
+            if let Some(surface) = self.window.surface() {
+                surface.request_layout();
             }
-            self.window.set_visible(true);
-            let widget = widget.clone();
+            let this = self.clone();
             glib::idle_add_local_once(move || {
-                widget.remove_css_class(FADE_HIDDEN_CLASS);
+                if !this.pending_hidden.get() && !this.window.is_visible() {
+                    host.before_map();
+                    this.map_faded();
+                }
             });
+        } else {
+            self.map_faded();
         }
+    }
+
+    /// Map at opacity 0, then drop the class on the next frame so the
+    /// transition actually fades it in rather than popping at 1.
+    fn map_faded(&self) {
+        let widget = self.pill.widget();
+        widget.add_css_class(FADE_HIDDEN_CLASS);
+        self.window.set_visible(true);
+        let widget = widget.clone();
+        glib::idle_add_local_once(move || {
+            widget.remove_css_class(FADE_HIDDEN_CLASS);
+        });
     }
 
     /// A level push from the publisher.
