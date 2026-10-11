@@ -5,20 +5,22 @@
 # pushes this directory and the binary to ~/myna-shot and runs it as the
 # user (suites/lib.sh `shot`).
 #
-# Usage: shot.sh [--polkit allow|deny|cancel] [--monitor NAME] [step ...]
+# Usage: shot.sh [--polkit allow|deny|cancel] [--monitor NAME] [--lang LOCALE] [step ...]
 #   --polkit MODE   answer snapd's and the pkexec --apply-plan and --set-up
 #                   prompts with a temporary rule; cancel answers through
 #                   cancel-agent.py, like pressing Cancel
 #   --monitor NAME  log processes, snapd changes and the journal to
 #                   out/NAME-{monitor,journal}.log
+#   --lang LOCALE   run the app in LOCALE (LANG) instead of the session's
 # Steps: see shot-driver.py.
 set -uo pipefail
 cd "$(dirname "$0")" || exit 2
-mode=none monitor=
+mode=none monitor='' lang=''
 while [ $# -gt 0 ]; do
     case $1 in
         --polkit) mode=$2; shift 2 ;;
         --monitor) monitor=$2; shift 2 ;;
+        --lang) lang=$2; shift 2 ;;
         *) break ;;
     esac
 done
@@ -76,6 +78,7 @@ if [ -n "$monitor" ]; then
 fi
 
 export MODE=$mode
+[ -z "$lang" ] || export LANG=$lang
 xvfb-run -a -s "-screen 0 1100x800x24" bash -s -- "$@" <<'INNER'
 export GDK_BACKEND=x11 GSETTINGS_SCHEMA_DIR=$PWD/schemas
 # Under x11 GTK loads libim-ibus, which on newer GTK + ibus (no IBus

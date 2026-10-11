@@ -13,7 +13,7 @@ e2e-tests/vm/provision.sh --release noble --force   # after an edge bump
 
 Needs LXD with KVM and the `myna-noble` workshop (`workshop launch
 myna-noble`), which builds the binary. The first run provisions the VM
-(about 15 minutes) and snapshots three states, `bare`, `components-only`
-and `installed`; every suite then restores the one its `# snapshot:` header
-names. Artifacts (screenshots, app and polkit logs, the journal) land in
+(about 15 minutes) and snapshots four states, `bare`, `components-only`,
+`installed` and `localized`; every suite then restores the one its
+`# snapshot:` header names. Artifacts (screenshots, app and polkit logs, the journal) land in
 `e2e-tests/.run/artifacts/<release>-<suite>/`.

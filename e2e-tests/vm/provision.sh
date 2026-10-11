@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Provision a GNOME desktop LXD VM for the Myna Settings e2e suites, from
-# the release's Ubuntu cloud image. Ends with the VM stopped and three
+# the release's Ubuntu cloud image. Ends with the VM stopped and four
 # snapshots that mirror the states the suites declare:
 #
 #   bare             desktop up, no myna snaps, no user-daemons flag
@@ -9,6 +9,8 @@
 #   installed        components-only plus myna-whisper (a second backend to
 #                    switch to), myna:backend connected to parakeet and the
 #                    daemon restarted
+#   localized        installed plus the Swedish language pack, which
+#                    translates snap's own output
 #
 # run-suite.sh copies one per suite and leaves the VM itself untouched; reprovision on a new edge revision
 # or a stale image with --force.
@@ -77,6 +79,10 @@ stage installed '
     sudo snap connect myna:backend myna-parakeet:provider
     systemctl --user restart snap.myna.myna.service
     systemctl --user is-active snap.myna.myna.service'
+stage localized '
+    sudo apt-get update -q
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
+        language-pack-sv-base'
 
 echo "== $VM provisioned; snapshots:"
 snapshots "$VM"
