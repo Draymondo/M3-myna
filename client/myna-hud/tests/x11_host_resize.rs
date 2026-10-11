@@ -27,11 +27,12 @@ use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 
 use myna_hud::dbus_consumer::{BUS_NAME, OBJECT_PATH};
+use myna_platform::status_surface::{placement, Point, Rect, Size, BOTTOM_MARGIN};
 use support::{Headless, Hud, PrivateBus};
 
 /// How late the window manager answers each request.
-const LAG: Duration = Duration::from_millis(15);
-const CYCLES: usize = 12;
+const LAG: Duration = Duration::from_millis(3);
+const CYCLES: usize = 25;
 const WAIT: Duration = Duration::from_secs(20);
 
 struct Dictation {
@@ -203,6 +204,31 @@ fn hud_window(conn: &RustConnection, root: Window) -> Option<Window> {
     })
 }
 
+fn centred(conn: &RustConnection, root: Window, window: Window) -> bool {
+    let (Some(geometry), Some(at)) = (
+        conn.get_geometry(window).ok().and_then(|c| c.reply().ok()),
+        conn.translate_coordinates(window, root, 0, 0)
+            .ok()
+            .and_then(|c| c.reply().ok()),
+    ) else {
+        return false;
+    };
+    let size = Size {
+        width: geometry.width.into(),
+        height: geometry.height.into(),
+    };
+    let screen = Rect {
+        x: 0,
+        y: 0,
+        width: 1024,
+        height: 768,
+    };
+    Point {
+        x: at.dst_x.into(),
+        y: at.dst_y.into(),
+    } == placement(screen, size, BOTTOM_MARGIN)
+}
+
 fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + WAIT;
     while !done() {
@@ -288,6 +314,9 @@ fn the_pill_is_never_laid_out_under_its_content() {
             } else {
                 wait_until("the HUD is mapped", || hud_window(&conn, root).is_some());
                 std::thread::sleep(LAG * 4);
+                wait_until("the HUD sits bottom-centre for its size", || {
+                    hud_window(&conn, root).is_some_and(|w| centred(&conn, root, w))
+                });
             }
         }
         failed += usize::from(criticals.load(Ordering::SeqCst) > before);
