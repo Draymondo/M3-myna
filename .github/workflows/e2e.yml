@@ -3,10 +3,9 @@
 # and Xubuntu (Xfce on X11) desktop LXD VMs (e2e-tests/), against the myna snap
 # built from this tree and the store's latest/edge backends. Provisioned from
 # scratch every run, so a regression in the edge snaps shows here too.
-# Blocking on pull requests: GNOME and Xubuntu on noble. Informational: the
-# devel series (its archive breaks for reasons not ours) and the Xubuntu
-# releases after noble, which run nightly only. Nobody daily-drives Xfce here,
-# so this is what catches its regressions.
+# Blocking, on pull requests and nightly: GNOME on every supported release
+# (noble, resolute and the devel series stonking) and Xubuntu on noble. Nobody
+# daily-drives Xfce here, so this is what catches its regressions.
 # Nightly, the Xubuntu screenshots are laid beside the last green nightly's in
 # a contact sheet (the `contact-sheet` job); see e2e-tests/AGENTS.md.
 name: E2E
@@ -90,16 +89,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        release: ${{ fromJSON(github.event_name == 'pull_request' && '["noble"]' || '["noble", "resolute", "stonking"]') }}
+        release: ["noble", "resolute", "stonking"]
         desktop: ["gnome", "xubuntu"]
         exclude:
           - { desktop: xubuntu, release: resolute }
           - { desktop: xubuntu, release: stonking }
-    # GNOME keeps its release-only names (required checks, artifacts). Pull
-    # requests run noble only; the Xubuntu check is "e2e (xubuntu, noble)".
+    # GNOME keeps its release-only names (required checks, artifacts); the
+    # Xubuntu check is "e2e (xubuntu, noble)".
     name: ${{ matrix.desktop == 'gnome' && format('e2e ({0})', matrix.release) || format('e2e ({0}, {1})', matrix.desktop, matrix.release) }}
     runs-on: ubuntu-latest
-    continue-on-error: ${{ matrix.release == 'stonking' || (matrix.desktop == 'xubuntu' && matrix.release != 'noble') }}
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v6

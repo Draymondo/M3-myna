@@ -76,9 +76,9 @@ manual-test VM; it only ever copies the `installed` snapshot of an e2e VM.
   `myna-e2e-<desktop>-<release>`, so they coexist. A new desktop adds a
   `user-data.<desktop>`, a `session_up` arm and, if X11, an `on_vm` arm in
   `lib.sh`; shared packages go in `user-data.common`.
-- Xubuntu noble is a blocking PR job with GNOME noble (check names `e2e
-  (noble)` and `e2e (xubuntu, noble)`; a required check is a repo setting).
-  Only the devel series is `continue-on-error`. Other Xubuntu releases are
+- Every job blocks pull requests: GNOME on noble, resolute and stonking
+  (check names `e2e (<release>)`) and Xubuntu on noble (`e2e (xubuntu,
+  noble)`); a required check is a repo setting. Other Xubuntu releases are
   not in the matrix yet. Keep GNOME's job names stable.
 - `E2E_VM_MEMORY` (default 6GiB, CI's) sizes every VM copy; a laptop that is
   also somebody's desktop uses `E2E_VM_MEMORY=4GiB`, one running VM at a time.
