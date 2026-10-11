@@ -10,7 +10,8 @@
 #                    switch to), myna:backend connected to parakeet and the
 #                    daemon restarted
 #   localized        installed plus the Swedish language pack, which
-#                    translates snap's own output
+#                    translates snap's own output, and the Simplified
+#                    Chinese one, whose speakers get another model
 #
 # run-suite.sh copies one per suite and leaves the VM itself untouched; reprovision on a new edge revision
 # or a stale image with --force.
@@ -82,7 +83,7 @@ stage installed '
 stage localized '
     sudo apt-get update -q
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
-        language-pack-sv-base'
+        language-pack-sv-base language-pack-zh-hans-base'
 
 echo "== $VM provisioned; snapshots:"
 snapshots "$VM"
