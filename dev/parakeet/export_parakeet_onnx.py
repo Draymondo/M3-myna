@@ -2,10 +2,15 @@
 # /// script
 # requires-python = ">=3.12,<3.13"
 # dependencies = [
-#     "nemo_toolkit[asr]==2.7.3",
+#     "nemo_toolkit[asr]==3.0.0",
 #     "torch==2.14.0",
 #     "onnx==1.22.0",
 # ]
+#
+# [tool.uv]
+# # lightning 2.4.0, the newest NeMo allows, caps fsspec below 2026, and every
+# # fsspec before 2026.6.0 renders ReferenceFileSystem templates unsafely.
+# override-dependencies = ["fsspec[http]>=2026.6.0"]
 #
 # [tool.uv.sources]
 # torch = { index = "pytorch-cpu" }
