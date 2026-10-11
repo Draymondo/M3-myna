@@ -15,6 +15,9 @@
 //! * `POST /v2/snaps/{name}` with exactly
 //!   `{"action":"install","channel":"latest/edge"}`, `{name}` a validated
 //!   snap name, to install it as `snap install --edge` does.
+//! * `GET  /v2/snaps` and `GET /v2/connections?select=all&interface=content`
+//!   to read what is installed and wired, where the `snap` CLI would print
+//!   tables whose headers follow the user's language.
 //!
 //! There is deliberately no way to send an arbitrary path, method, body, or
 //! header through this module. Snap names are re-validated against the strict
@@ -35,6 +38,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::command::CancellationToken;
+use crate::diagnostics::InstalledSnap;
+use crate::domain::ContentConnections;
 use crate::snap_changes::{parse_change, parse_changes, ChangeInProgress};
 
 /// Every change snapd has not finished. Not `for=<snap>`: snapd cannot name
@@ -47,14 +52,19 @@ const SYSTEM_INFO: &str = "/v2/system-info";
 
 pub(crate) const INTERFACES: &str = "/v2/interfaces";
 
+const SNAPS: &str = "/v2/snaps";
+
+/// Unconnected slots too, as `snap connections --all` lists them.
+const CONTENT_CONNECTIONS: &str = "/v2/connections?select=all&interface=content";
+
 const INSTALL_ON_EDGE: &str = r#"{"action":"install","channel":"latest/edge"}"#;
 
 /// Default host location of the snapd socket. The value is deliberately a
 /// constant, not user configurable, so an attacker cannot redirect the client.
 pub const DEFAULT_SNAPD_SOCKET: &str = "/run/snapd.socket";
 
-/// Maximum HTTP response size we will read from snapd. 1 MiB is far larger
-/// than any legitimate `/v2/interfaces` or `/v2/changes/{id}` response.
+/// Maximum HTTP response size we will read from snapd. A desktop with 45
+/// snaps answers `/v2/snaps` and `/v2/connections` in about 100 KB.
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
 /// Independent bound on the HTTP header block. Snapd headers are tiny; this
@@ -395,6 +405,22 @@ pub trait SnapdClient {
     ) -> Result<ChangeInProgress, SnapdError>;
 }
 
+/// What Settings reads of snapd to know what is installed and wired, as
+/// the user.
+#[async_trait(?Send)]
+pub trait SnapdReads {
+    async fn installed_snaps(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<Vec<InstalledSnap>, SnapdError>;
+
+    /// Every content slot, connected or not, with its plugs.
+    async fn content_connections(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<ContentConnections, SnapdError>;
+}
+
 /// Real snapd client. Runs blocking Unix-socket I/O off the GTK main loop via
 /// [`gio::spawn_blocking`] so callers on the main context are never blocked.
 #[derive(Clone, Debug)]
@@ -523,6 +549,54 @@ impl SnapdClient for UnixSocketSnapdClient {
         });
         handle.await.map_err(worker_panicked)?
     }
+}
+
+#[async_trait(?Send)]
+impl SnapdReads for UnixSocketSnapdClient {
+    async fn installed_snaps(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<Vec<InstalledSnap>, SnapdError> {
+        let socket_path = self.socket_path.clone();
+        let timeouts = self.timeouts;
+        let handle = gio::spawn_blocking(move || {
+            blocking_read(&socket_path, timeouts, SNAPS, "the snaps", &cancellation)
+        });
+        handle.await.map_err(worker_panicked)?
+    }
+
+    async fn content_connections(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<ContentConnections, SnapdError> {
+        let socket_path = self.socket_path.clone();
+        let timeouts = self.timeouts;
+        let handle = gio::spawn_blocking(move || {
+            blocking_read(
+                &socket_path,
+                timeouts,
+                CONTENT_CONNECTIONS,
+                "the content connections",
+                &cancellation,
+            )
+        });
+        handle.await.map_err(worker_panicked)?
+    }
+}
+
+/// One `GET` whose sync `result` decodes as `T`.
+fn blocking_read<T: serde::de::DeserializeOwned>(
+    socket_path: &Path,
+    timeouts: SnapdTimeouts,
+    path: &str,
+    what: &str,
+    cancellation: &CancellationToken,
+) -> Result<T, SnapdError> {
+    let result = blocking_get(socket_path, timeouts, path, what, cancellation)?;
+    serde_json::from_value(result.json).map_err(|error| SnapdError::Protocol {
+        message: format!("could not parse {what}: {error}"),
+        body: result.body,
+    })
 }
 
 /// A sync `result` and, truncated, the response it came in.

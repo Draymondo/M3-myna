@@ -1,4 +1,0 @@
-Interface                         Plug           Slot                                  Notes
-content[inference-provider]       myna:backend   myna-parakeet:provider                manual
-content                           -              myna-whisper:provider                 -
-network                           browser:network :network                             -

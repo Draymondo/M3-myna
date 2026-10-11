@@ -1,2 +1,0 @@
-Interface Plug Slot
-content - myna-whisper:provider

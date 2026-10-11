@@ -21,8 +21,8 @@ still lists a deleted hicolor copy made the theme fail without falling back.
 ## What opens it
 
 `myna_config::onboarding` assesses four components from the observations the
-application already makes at startup (`snap list`, `snap connections` and
-`snap interface content`), snapd's `/v2/system-info` read as the user, and
+application already makes at startup (snapd's `/v2/snaps` and
+`/v2/connections`), snapd's `/v2/system-info` read as the user, and
 gnome-shell's `org.gnome.Shell.Extensions`:
 
 | Component       | Required | Satisfied when                                          |
@@ -390,13 +390,13 @@ the row's subtitle, since a row has no room under the prompt. The capture:
 
 ## Cost
 
-The startup assessment is the same two subprocesses as a startup
-refresh, plus one read of snapd's socket and one D-Bus call to gnome-shell,
+The startup assessment is the same two snapd reads as a startup
+refresh, plus one more for the flag and one D-Bus call to gnome-shell,
 run before any window exists, and it is handed to the wizard rather than
 repeated there. The shortcut proxy spawns nothing: it is one D-Bus match
 per surface. Regaining focus on the component step costs a full re-assessment,
-and so does each poll while a component is missing: a `snap list`, a
-discovery, one read of snapd's socket for the flag, one `GetExtensionInfo`
+and so does each poll while a component is missing: snapd's snaps, its
+connections and its flag, read over its socket, one `GetExtensionInfo`
 call to gnome-shell (at most 2 s when it does not answer), a stat of each
 extension directory and a scan of `/sys/bus/pci/devices` for an NVIDIA GPU.
 While a snap is missing and the flag is on, each re-assessment also

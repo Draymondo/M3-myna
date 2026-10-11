@@ -19,6 +19,7 @@ use crate::active_backend::{
     execute_switch, ActiveBackendController, PrepareSwitchError, SwitchNotice, SwitchOutcome,
 };
 use crate::adapters::snap_backend::SnapBackendRepository;
+use crate::adapters::snapd_client::UnixSocketSnapdClient;
 use crate::adapters::system_configurator::PkexecSystemConfigurator;
 use crate::backend_apply::{
     execute_backend_apply, prepare_change, ApplyFailure, ApplyPreview, ApplySuccess,
@@ -539,8 +540,10 @@ impl BackendUi {
         general_settings: Option<GeneralSettings>,
         diagnostics_page: adw::NavigationPage,
     ) -> Rc<Self> {
-        let repository: Rc<dyn BackendRepository> =
-            Rc::new(SnapBackendRepository::new(Arc::new(GioCommandRunner)));
+        let repository: Rc<dyn BackendRepository> = Rc::new(SnapBackendRepository::new(
+            Arc::new(GioCommandRunner),
+            Arc::new(UnixSocketSnapdClient::new()),
+        ));
         let configurator: Rc<dyn SystemConfigurator> =
             Rc::new(PkexecSystemConfigurator::new(Arc::new(GioCommandRunner)));
         let ui = Self::install_with_ports(
@@ -3509,30 +3512,36 @@ mod tests {
         });
     }
 
-    const PARAKEET_SLOT: &str =
-        "name: content\nslots:\n  - myna-parakeet:provider:\n      content: inference-provider\n";
-    const PARAKEET_CONNECTED: &str = "Interface Plug Slot Notes\n\
-         content[inference-provider] myna:backend myna-parakeet:provider manual\n";
-    const PARAKEET_DISCONNECTED: &str =
-        "Interface Plug Slot Notes\ncontent - myna-parakeet:provider -\n";
-    const PARAKEET_AND_WHISPER_SLOTS: &str = "name: content\nslots:\n  \
-         - myna-parakeet:provider:\n      content: inference-provider\n  \
-         - myna-whisper:provider:\n      content: inference-provider\n";
-    const PARAKEET_CONNECTED_WHISPER_INSTALLED: &str = "Interface Plug Slot Notes\n\
-         content[inference-provider] myna:backend myna-parakeet:provider manual\n\
-         content - myna-whisper:provider -\n";
+    /// The model slots snapd lists, and the ones `myna:backend` is connected to.
+    type Wiring = (&'static [&'static str], &'static [&'static str]);
 
-    const WHISPER_CONNECTED_PARAKEET_INSTALLED: &str = "Interface Plug Slot Notes\n\
-         content - myna-parakeet:provider -\n\
-         content[inference-provider] myna:backend myna-whisper:provider manual\n";
+    fn wired((models, connected): Wiring) -> crate::domain::ConnectionSnapshot {
+        let backend = |snap: &&str| BackendIdentity::new(*snap, "provider");
+        let mut backends: Vec<_> = models.iter().map(backend).collect();
+        backends.sort();
+        let active = match connected {
+            [] => crate::domain::ActiveBackendState::Disconnected,
+            [snap] => crate::domain::ActiveBackendState::Connected(backend(snap)),
+            many => crate::domain::ActiveBackendState::MultiplyConnected(
+                many.iter().map(backend).collect(),
+            ),
+        };
+        crate::domain::ConnectionSnapshot::new(backends, active)
+    }
 
-    const NEITHER_CONNECTED: &str = "Interface Plug Slot Notes\n\
-         content - myna-parakeet:provider -\n\
-         content - myna-whisper:provider -\n";
+    const PARAKEET_CONNECTED: Wiring = (&["myna-parakeet"], &["myna-parakeet"]);
+    const PARAKEET_DISCONNECTED: Wiring = (&["myna-parakeet"], &[]);
+    const PARAKEET_CONNECTED_WHISPER_INSTALLED: Wiring =
+        (&["myna-parakeet", "myna-whisper"], &["myna-parakeet"]);
+
+    const WHISPER_CONNECTED_PARAKEET_INSTALLED: Wiring =
+        (&["myna-parakeet", "myna-whisper"], &["myna-whisper"]);
+
+    const NEITHER_CONNECTED: Wiring = (&["myna-parakeet", "myna-whisper"], &[]);
 
     /// The Model tab over `connections`, with a spoken-language group holding
     /// one entry row, shown on screen.
-    fn spoken_language_ui(connections: &str) -> (Rc<BackendUi>, adw::EntryRow, gtk::Window) {
+    fn spoken_language_ui(connections: Wiring) -> (Rc<BackendUi>, adw::EntryRow, gtk::Window) {
         ui::register_resources();
         let row = adw::EntryRow::builder()
             .title("Spoken language")
@@ -3540,11 +3549,7 @@ mod tests {
             .build();
         let group = adw::PreferencesGroup::new();
         group.add(&row);
-        let TestUi { ui, view_stack } = test_ui_full(
-            discovered_with(connections, PARAKEET_AND_WHISPER_SLOTS),
-            None,
-            Some(group),
-        );
+        let TestUi { ui, view_stack } = test_ui_full(discovered(connections), None, Some(group));
         view_stack.set_visible_child_name("model");
         let window = gtk::Window::builder().child(&view_stack).build();
         window.present();
@@ -3558,10 +3563,9 @@ mod tests {
             .is_some_and(|page| row.is_ancestor(&page))
     }
 
-    fn rediscover_as(ui: &Rc<BackendUi>, connections: &str) {
+    fn rediscover_as(ui: &Rc<BackendUi>, connections: Wiring) {
         let request = ui.controller.begin_discovery();
-        let snapshot = crate::domain::parse_connections(connections, PARAKEET_AND_WHISPER_SLOTS)
-            .expect("connections parse");
+        let snapshot = wired(connections);
         ui.controller.complete_discovery(request, Ok(snapshot));
         ui.sync_active_backend();
     }
@@ -3635,15 +3639,10 @@ mod tests {
         }
     }
 
-    fn discovered(connections: &str) -> Rc<BackendController> {
-        discovered_with(connections, PARAKEET_SLOT)
-    }
-
-    fn discovered_with(connections: &str, slots: &str) -> Rc<BackendController> {
+    fn discovered(connections: Wiring) -> Rc<BackendController> {
         let controller = BackendController::new(Rc::new(UnansweredRepository));
         let request = controller.begin_discovery();
-        let snapshot =
-            crate::domain::parse_connections(connections, slots).expect("connections parse");
+        let snapshot = wired(connections);
         controller.complete_discovery(request, Ok(snapshot));
         controller
     }
@@ -3740,16 +3739,9 @@ mod tests {
             .collect()
     }
 
-    fn general_ui(connections: &str) -> Rc<BackendUi> {
-        general_ui_with(connections, PARAKEET_SLOT)
-    }
-
-    fn general_ui_with(connections: &str, slots: &str) -> Rc<BackendUi> {
+    fn general_ui(connections: Wiring) -> Rc<BackendUi> {
         ui::register_resources();
-        let TestUi { ui, .. } = test_ui_with(
-            discovered_with(connections, slots),
-            Some(ui::MynaPage::new()),
-        );
+        let TestUi { ui, .. } = test_ui_with(discovered(connections), Some(ui::MynaPage::new()));
         ui.sync_active_backend();
         ui
     }
@@ -3786,10 +3778,7 @@ mod tests {
     #[test]
     fn two_models_are_exclusive_radios() {
         on_gtk_thread(|| {
-            let ui = general_ui_with(
-                PARAKEET_CONNECTED_WHISPER_INSTALLED,
-                PARAKEET_AND_WHISPER_SLOTS,
-            );
+            let ui = general_ui(PARAKEET_CONNECTED_WHISPER_INSTALLED);
             assert_eq!(
                 listed_models(&ui)
                     .into_iter()
@@ -3824,8 +3813,7 @@ mod tests {
         on_gtk_thread(|| {
             let ui = general_ui(PARAKEET_DISCONNECTED);
             let request = ui.controller.begin_discovery();
-            let snapshot = crate::domain::parse_connections(PARAKEET_CONNECTED, PARAKEET_SLOT)
-                .expect("connections parse");
+            let snapshot = wired(PARAKEET_CONNECTED);
             ui.controller.complete_discovery(request, Ok(snapshot));
             ui.sync_active_backend();
             assert_eq!(
@@ -3933,10 +3921,7 @@ mod tests {
     }
 
     fn two_models_for(languages: &[&str]) -> Rc<BackendUi> {
-        let ui = general_ui_with(
-            PARAKEET_CONNECTED_WHISPER_INSTALLED,
-            PARAKEET_AND_WHISPER_SLOTS,
-        );
+        let ui = general_ui(PARAKEET_CONNECTED_WHISPER_INSTALLED);
         ui.set_preferred_languages(languages.iter().map(|l| l.to_string()).collect());
         ui
     }
@@ -3970,19 +3955,15 @@ mod tests {
         });
     }
 
-    const THREE_MODEL_SLOTS: &str = "name: content\nslots:\n  \
-         - myna-parakeet:provider:\n      content: inference-provider\n  \
-         - myna-whisper:provider:\n      content: inference-provider\n  \
-         - myna-fake-backend:provider:\n      content: inference-provider\n      task: speech-to-text\n";
-    const PARAKEET_CONNECTED_TWO_MORE_INSTALLED: &str = "Interface Plug Slot Notes\n\
-         content[inference-provider] myna:backend myna-parakeet:provider manual\n\
-         content - myna-whisper:provider -\n\
-         content - myna-fake-backend:provider -\n";
+    const PARAKEET_CONNECTED_TWO_MORE_INSTALLED: Wiring = (
+        &["myna-parakeet", "myna-whisper", "myna-fake-backend"],
+        &["myna-parakeet"],
+    );
 
     #[test]
     fn the_pill_and_the_languages_name_the_user_language_in_itself() {
         on_gtk_thread(|| {
-            let ui = general_ui_with(PARAKEET_CONNECTED_TWO_MORE_INSTALLED, THREE_MODEL_SLOTS);
+            let ui = general_ui(PARAKEET_CONNECTED_TWO_MORE_INSTALLED);
             assert_eq!(
                 pills_and_languages(&ui),
                 [
@@ -4103,7 +4084,7 @@ mod tests {
     #[test]
     fn no_pill_until_the_language_is_known() {
         on_gtk_thread(|| {
-            let ui = general_ui_with(PARAKEET_CONNECTED_TWO_MORE_INSTALLED, THREE_MODEL_SLOTS);
+            let ui = general_ui(PARAKEET_CONNECTED_TWO_MORE_INSTALLED);
             let unknown = recommended_rows(&ui);
             assert_eq!(unknown.len(), 3);
             assert!(
@@ -4125,10 +4106,7 @@ mod tests {
     #[test]
     fn the_language_is_read_off_the_main_thread_then_recommends() {
         on_gtk_thread(|| {
-            let ui = general_ui_with(
-                PARAKEET_CONNECTED_WHISPER_INSTALLED,
-                PARAKEET_AND_WHISPER_SLOTS,
-            );
+            let ui = general_ui(PARAKEET_CONNECTED_WHISPER_INSTALLED);
             let main = std::thread::current().id();
             let (read_on_tx, read_on) = std::sync::mpsc::channel();
             ui.read_preferred_languages(move || {
@@ -4149,21 +4127,13 @@ mod tests {
         });
     }
 
-    const KNOWN_FAMILY_SLOTS: &str = "name: content\nslots:\n  \
-         - myna-parakeet:provider:\n      content: inference-provider\n  \
-         - myna-whisper:provider:\n      content: inference-provider\n  \
-         - myna-funasr:provider:\n      content: inference-provider\n";
-    const PARAKEET_CONNECTED_EVERY_FAMILY_INSTALLED: &str = "Interface Plug Slot Notes\n\
-         content[inference-provider] myna:backend myna-parakeet:provider manual\n\
-         content - myna-whisper:provider -\n\
-         content - myna-funasr:provider -\n";
+    const PARAKEET_CONNECTED_EVERY_FAMILY_INSTALLED: Wiring = (
+        &["myna-parakeet", "myna-whisper", "myna-funasr"],
+        &["myna-parakeet"],
+    );
 
-    const PARAKEET_AND_FUNASR_SLOTS: &str = "name: content\nslots:\n  \
-         - myna-parakeet:provider:\n      content: inference-provider\n  \
-         - myna-funasr:provider:\n      content: inference-provider\n";
-    const PARAKEET_CONNECTED_FUNASR_INSTALLED: &str = "Interface Plug Slot Notes\n\
-         content[inference-provider] myna:backend myna-parakeet:provider manual\n\
-         content - myna-funasr:provider -\n";
+    const PARAKEET_CONNECTED_FUNASR_INSTALLED: Wiring =
+        (&["myna-parakeet", "myna-funasr"], &["myna-parakeet"]);
 
     /// The hint Install more models shows, when it is shown.
     fn install_hint(ui: &BackendUi) -> Option<String> {
@@ -4181,10 +4151,7 @@ mod tests {
                 Some("A better model for 中文 is available")
             );
             assert_eq!(install_hint(&two_models_for(&["en_US"])), None);
-            let unknown = general_ui_with(
-                PARAKEET_CONNECTED_WHISPER_INSTALLED,
-                PARAKEET_AND_WHISPER_SLOTS,
-            );
+            let unknown = general_ui(PARAKEET_CONNECTED_WHISPER_INSTALLED);
             assert_eq!(install_hint(&unknown), None, "no hint before the language");
             let dialog = ui.install_models();
             assert_eq!(
@@ -4195,10 +4162,7 @@ mod tests {
                 [("FunASR".to_owned(), Some("Best for 中文".to_owned()))],
                 "the dialog keeps the pill on the best family"
             );
-            let with_funasr = general_ui_with(
-                PARAKEET_CONNECTED_FUNASR_INSTALLED,
-                PARAKEET_AND_FUNASR_SLOTS,
-            );
+            let with_funasr = general_ui(PARAKEET_CONNECTED_FUNASR_INSTALLED);
             with_funasr.set_preferred_languages(vec!["zh_CN".to_owned()]);
             assert_eq!(install_hint(&with_funasr), None);
             assert!(
@@ -4220,13 +4184,11 @@ mod tests {
     fn install_more_models_hides_once_every_known_family_is_installed() {
         on_gtk_thread(|| {
             assert!(install_button_shown(&general_ui(PARAKEET_CONNECTED)));
-            assert!(install_button_shown(&general_ui_with(
-                PARAKEET_CONNECTED_TWO_MORE_INSTALLED,
-                THREE_MODEL_SLOTS,
+            assert!(install_button_shown(&general_ui(
+                PARAKEET_CONNECTED_TWO_MORE_INSTALLED
             )));
-            assert!(!install_button_shown(&general_ui_with(
-                PARAKEET_CONNECTED_EVERY_FAMILY_INSTALLED,
-                KNOWN_FAMILY_SLOTS,
+            assert!(!install_button_shown(&general_ui(
+                PARAKEET_CONNECTED_EVERY_FAMILY_INSTALLED
             )));
         });
     }
@@ -4651,7 +4613,7 @@ mod tests {
     /// Answers every discovery with the machine as it stands, and counts the
     /// connection reads.
     struct ChangingRepository {
-        machine: RefCell<(&'static str, &'static str)>,
+        machine: RefCell<Wiring>,
         reads: std::cell::Cell<usize>,
     }
 
@@ -4677,8 +4639,7 @@ mod tests {
             _cancellation: CancellationToken,
         ) -> Result<crate::domain::ConnectionSnapshot, crate::domain::BackendSurfaceError> {
             self.reads.set(self.reads.get() + 1);
-            let (connections, slots) = *self.machine.borrow();
-            Ok(crate::domain::parse_connections(connections, slots).expect("connections parse"))
+            Ok(wired(*self.machine.borrow()))
         }
     }
 
@@ -4687,7 +4648,7 @@ mod tests {
     fn refocusable_ui() -> (Rc<BackendUi>, Rc<ChangingRepository>, adw::Window) {
         ui::register_resources();
         let repository = Rc::new(ChangingRepository {
-            machine: RefCell::new((PARAKEET_CONNECTED, PARAKEET_SLOT)),
+            machine: RefCell::new(PARAKEET_CONNECTED),
             reads: std::cell::Cell::new(0),
         });
         let controller = BackendController::new(repository.clone());
@@ -4708,13 +4669,8 @@ mod tests {
             .build();
         window.present();
         let request = ui.controller.begin_discovery();
-        ui.controller.complete_discovery(
-            request,
-            Ok(
-                crate::domain::parse_connections(PARAKEET_CONNECTED, PARAKEET_SLOT)
-                    .expect("connections parse"),
-            ),
-        );
+        ui.controller
+            .complete_discovery(request, Ok(wired(PARAKEET_CONNECTED)));
         (ui, repository, window)
     }
 
@@ -4800,10 +4756,7 @@ mod tests {
                         "progress": {"label": snap, "done": done * DOWNLOAD_UNIT, "total": 100 * DOWNLOAD_UNIT}}]}),
                 None => {
                     self.pending.borrow_mut().retain(|pending| pending != snap);
-                    *self.repository.machine.borrow_mut() = (
-                        PARAKEET_CONNECTED_WHISPER_INSTALLED,
-                        PARAKEET_AND_WHISPER_SLOTS,
-                    );
+                    *self.repository.machine.borrow_mut() = PARAKEET_CONNECTED_WHISPER_INSTALLED;
                     serde_json::json!({"id": change_id, "kind": "install-snap",
                         "ready": true, "status": "Done", "summary": format!("Install \"{snap}\" snap")})
                 }
@@ -4864,7 +4817,7 @@ mod tests {
     ) {
         ui::register_resources();
         let repository = Rc::new(ChangingRepository {
-            machine: RefCell::new((PARAKEET_CONNECTED, PARAKEET_SLOT)),
+            machine: RefCell::new(PARAKEET_CONNECTED),
             reads: std::cell::Cell::new(0),
         });
         let snapd = Rc::new(InstallMachine::new(Rc::clone(&repository)));
@@ -5091,10 +5044,7 @@ mod tests {
             };
             assert_eq!(offered_titles(&dialog), ["Whisper", "FunASR"]);
 
-            *repository.machine.borrow_mut() = (
-                PARAKEET_CONNECTED_WHISPER_INSTALLED,
-                PARAKEET_AND_WHISPER_SLOTS,
-            );
+            *repository.machine.borrow_mut() = PARAKEET_CONNECTED_WHISPER_INSTALLED;
             ui.rediscover_on_focus(after_the_interval());
             settle(|| model_titles(&ui).len() == 2);
 
@@ -5114,10 +5064,7 @@ mod tests {
                 "an installed family stays, saying so"
             );
 
-            *repository.machine.borrow_mut() = (
-                PARAKEET_CONNECTED_EVERY_FAMILY_INSTALLED,
-                KNOWN_FAMILY_SLOTS,
-            );
+            *repository.machine.borrow_mut() = PARAKEET_CONNECTED_EVERY_FAMILY_INSTALLED;
             ui.rediscover_on_focus(
                 after_the_interval() + crate::backend_controller::FOCUS_REDISCOVERY_INTERVAL,
             );
@@ -5143,10 +5090,7 @@ mod tests {
     fn installing_the_best_model_meanwhile_moves_the_pill_and_drops_the_hint() {
         on_gtk_thread(|| {
             let (ui, repository, window) = refocusable_ui();
-            *repository.machine.borrow_mut() = (
-                PARAKEET_CONNECTED_WHISPER_INSTALLED,
-                PARAKEET_AND_WHISPER_SLOTS,
-            );
+            *repository.machine.borrow_mut() = PARAKEET_CONNECTED_WHISPER_INSTALLED;
             ui.rediscover_on_focus(after_the_interval());
             settle(|| model_titles(&ui).len() == 2);
             ui.set_preferred_languages(vec!["zh_CN".to_owned()]);
@@ -5162,10 +5106,7 @@ mod tests {
             );
             assert!(install_hint(&ui).is_some());
 
-            *repository.machine.borrow_mut() = (
-                PARAKEET_CONNECTED_EVERY_FAMILY_INSTALLED,
-                KNOWN_FAMILY_SLOTS,
-            );
+            *repository.machine.borrow_mut() = PARAKEET_CONNECTED_EVERY_FAMILY_INSTALLED;
             ui.rediscover_on_focus(
                 after_the_interval() + crate::backend_controller::FOCUS_REDISCOVERY_INTERVAL,
             );
@@ -5193,10 +5134,7 @@ mod tests {
                 install_hint(&ui).as_deref(),
                 Some("A better model for 한국어 is available")
             );
-            *repository.machine.borrow_mut() = (
-                PARAKEET_CONNECTED_FUNASR_INSTALLED,
-                PARAKEET_AND_FUNASR_SLOTS,
-            );
+            *repository.machine.borrow_mut() = PARAKEET_CONNECTED_FUNASR_INSTALLED;
             ui.rediscover_on_focus(after_the_interval());
             settle(|| model_titles(&ui).len() == 2);
             assert_eq!(
@@ -5350,10 +5288,7 @@ mod tests {
             &self,
             _cancellation: CancellationToken,
         ) -> Result<crate::domain::ConnectionSnapshot, crate::domain::BackendSurfaceError> {
-            Ok(
-                crate::domain::parse_connections(PARAKEET_CONNECTED, PARAKEET_SLOT)
-                    .expect("connections parse"),
-            )
+            Ok(wired(PARAKEET_CONNECTED))
         }
     }
 
@@ -5483,13 +5418,8 @@ mod tests {
         window.present();
         view_stack.set_visible_child_name("model");
         let request = ui.controller.begin_discovery();
-        ui.controller.complete_discovery(
-            request,
-            Ok(
-                crate::domain::parse_connections(PARAKEET_CONNECTED, PARAKEET_SLOT)
-                    .expect("connections parse"),
-            ),
-        );
+        ui.controller
+            .complete_discovery(request, Ok(wired(PARAKEET_CONNECTED)));
         settle(|| setting::<adw::SwitchRow>(&ui, "streaming").is_some());
         (ui, machine, window)
     }

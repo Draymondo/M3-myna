@@ -2,9 +2,6 @@
 # Answers the snap reads Myna Settings makes, from the fixtures one level up.
 fixtures=$(dirname "$0")/..
 case "$*" in
-"list --unicode=never") cat "$fixtures/snap-list.txt" ;;
-"connections --all") cat "$fixtures/snap-connections.txt" ;;
-"interface content --attrs") cat "$fixtures/snap-interface-content.txt" ;;
 "info "*) sed "s/myna-parakeet/$2/g" "$fixtures/snap-info-parakeet.txt" ;;
 "run "*" version --format=json") cat "$fixtures/modelctl-version.json" ;;
 "run "*" status --format=json") cat "$fixtures/modelctl-status.json" ;;

@@ -345,14 +345,15 @@ fn onboarding_probe() -> glib::ExitCode {
 
     // A machine with nothing installed: the flow opens, and its component step
     // refuses to advance.
-    // Every command fails, so a refresh on focus still sees a bare machine.
-    let runner = std::sync::Arc::new(crate::command::FakeCommandRunner::default());
+    // Every read fails, so a refresh on focus still sees a bare machine.
+    let bare = ProbeMachine::bare();
     let window = {
         let ui = OnboardingUi::present_with_ports(
             &application,
             assess(Machine::default()),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
-                runner.clone(),
+                std::sync::Arc::new(crate::command::FakeCommandRunner::default()),
+                std::sync::Arc::new(bare.clone()),
             )),
             Rc::new(ProbeMachine::new()),
             ProbeExtensions::new(crate::onboarding::ExtensionState::Enabled),
@@ -507,7 +508,7 @@ fn onboarding_probe() -> glib::ExitCode {
     settle_gtk();
     elsewhere.close();
     window.present();
-    let refreshed = || !runner.calls().is_empty();
+    let refreshed = || bare.reads() > 0;
     for _ in 0..100 {
         if refreshed() {
             break;
@@ -559,6 +560,7 @@ fn onboarding_probe() -> glib::ExitCode {
             &application,
             assess(Machine::default()),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+                std::sync::Arc::new(machine.clone()),
                 std::sync::Arc::new(machine.clone()),
             )),
             Rc::new(machine.clone()),
@@ -668,6 +670,7 @@ fn onboarding_probe() -> glib::ExitCode {
             assess(Machine::default()),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
                 std::sync::Arc::new(machine.clone()),
+                std::sync::Arc::new(machine.clone()),
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(crate::onboarding::ExtensionState::Enabled),
@@ -706,6 +709,7 @@ fn onboarding_probe() -> glib::ExitCode {
             &application,
             assess(Machine::default()),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+                std::sync::Arc::new(machine.clone()),
                 std::sync::Arc::new(machine.clone()),
             )),
             Rc::new(machine.clone()),
@@ -748,6 +752,7 @@ fn onboarding_probe() -> glib::ExitCode {
             &application,
             assess(Machine::default()),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+                std::sync::Arc::new(machine.clone()),
                 std::sync::Arc::new(machine.clone()),
             )),
             Rc::new(machine.clone()),
@@ -798,6 +803,7 @@ fn onboarding_probe() -> glib::ExitCode {
             &application,
             assess(Machine::default()),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+                std::sync::Arc::new(machine.clone()),
                 std::sync::Arc::new(machine.clone()),
             )),
             Rc::new(machine.clone()),
@@ -875,6 +881,7 @@ fn onboarding_probe() -> glib::ExitCode {
             }),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
                 std::sync::Arc::new(crate::command::FakeCommandRunner::default()),
+                std::sync::Arc::new(ProbeMachine::bare()),
             )),
             Rc::new(ProbeMachine::new()),
             ProbeExtensions::new(crate::onboarding::ExtensionState::Enabled),
@@ -920,6 +927,7 @@ fn onboarding_probe() -> glib::ExitCode {
                 ..Machine::new(&installed, 1)
             }),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+                std::sync::Arc::new(machine.clone()),
                 std::sync::Arc::new(machine.clone()),
             )),
             Rc::new(machine.clone()),
@@ -1009,6 +1017,7 @@ fn onboarding_probe() -> glib::ExitCode {
                 ..Machine::new(&installed, 1)
             }),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+                std::sync::Arc::new(machine.clone()),
                 std::sync::Arc::new(machine.clone()),
             )),
             Rc::new(machine.clone()),
@@ -1199,6 +1208,7 @@ fn onboarding_probe() -> glib::ExitCode {
             ..Machine::new(&installed, 1)
         }),
         Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+            std::sync::Arc::new(machine.clone()),
             std::sync::Arc::new(machine.clone()),
         )),
         Rc::new(machine.clone()),
@@ -1425,8 +1435,8 @@ fn template_probe() -> glib::ExitCode {
 }
 
 /// Read the machine once, then open either the onboarding wizard or the
-/// settings window. The read is the same two subprocesses a startup refresh
-/// already budgets for (`snap list`, `snap connections`), and the wizard is
+/// settings window. The read is the same two snapd reads a startup refresh
+/// already budgets for (`/v2/snaps`, `/v2/connections`), and the wizard is
 /// handed the result rather than repeating it.
 fn build_window(application: &adw::Application) {
     ui::register_resources();
@@ -1443,7 +1453,10 @@ fn build_window(application: &adw::Application) {
     glib::spawn_future_local(async move {
         let runner = std::sync::Arc::new(crate::command::GioCommandRunner);
         let components = crate::onboarding_ui::assess_machine(
-            &crate::adapters::snap_backend::SnapBackendRepository::new(runner.clone()),
+            &crate::adapters::snap_backend::SnapBackendRepository::new(
+                runner.clone(),
+                std::sync::Arc::new(crate::adapters::snapd_client::UnixSocketSnapdClient::new()),
+            ),
             &crate::adapters::system_configurator::PkexecSystemConfigurator::new(runner),
             &crate::adapters::shell_extensions::GnomeShellExtensions::new(),
         )
@@ -1806,6 +1819,7 @@ fn onboarding_control_probe() -> glib::ExitCode {
                 }),
                 Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
                     std::sync::Arc::new(machine.clone()),
+                    std::sync::Arc::new(machine.clone()),
                 )),
                 Rc::new(machine),
                 ProbeExtensions::new(crate::onboarding::ExtensionState::Enabled),
@@ -2021,6 +2035,7 @@ fn onboarding_control_probe() -> glib::ExitCode {
             ..Machine::new(&installed, 1)
         }),
         Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+            std::sync::Arc::new(ProbeMachine::new()),
             std::sync::Arc::new(ProbeMachine::new()),
         )),
         Rc::new(ProbeMachine::new()),
@@ -2487,17 +2502,50 @@ impl ProbeMachine {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn connections(&self) -> String {
+    fn connections(&self) -> crate::domain::ContentConnections {
         let connected = self.connected.lock().expect("probe machine lock");
-        let mut table = "Interface  Plug  Slot  Notes\n".to_owned();
-        for snap in ["myna-parakeet", "myna-whisper"] {
-            table.push_str(&if connected.iter().any(|backend| backend == snap) {
-                format!("content[inference-provider]  myna:backend  {snap}:provider  manual\n")
-            } else {
-                format!("content  -  {snap}:provider  -\n")
-            });
-        }
-        table + "network  browser:network  :network  -\n"
+        let models: &[&str] = if self.myna_only.load(std::sync::atomic::Ordering::SeqCst) {
+            &[]
+        } else {
+            &["myna-parakeet", "myna-whisper"]
+        };
+        let slots: Vec<_> = models
+            .iter()
+            .map(|snap| {
+                let plugs = if connected.iter().any(|backend| backend == snap) {
+                    serde_json::json!([{"snap": "myna", "plug": "backend"}])
+                } else {
+                    serde_json::json!([])
+                };
+                serde_json::json!({
+                    "snap": snap,
+                    "slot": "provider",
+                    "interface": "content",
+                    "attrs": {"content": "inference-provider"},
+                    "connections": plugs,
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({ "slots": slots })).expect("content slots")
+    }
+
+    fn snap_inventory(&self) -> Vec<crate::diagnostics::InstalledSnap> {
+        let snaps: &[(&str, &str)] = if self.myna_only.load(std::sync::atomic::Ordering::SeqCst) {
+            &[("myna", "1.2.3")]
+        } else {
+            &[
+                ("myna", "1.2.3"),
+                ("myna-parakeet", "0.1.0"),
+                ("myna-whisper", "0.1.0"),
+            ]
+        };
+        snaps
+            .iter()
+            .map(|(name, version)| crate::diagnostics::InstalledSnap {
+                name: (*name).to_owned(),
+                version: (*version).to_owned(),
+            })
+            .collect()
     }
 
     fn hold_changes(&self, installing: bool) {
@@ -2558,6 +2606,17 @@ impl ProbeMachine {
         self.reads.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// One snapd read, counted with the commands; a bare machine fails it.
+    fn read_snapd(&self) -> Result<(), crate::adapters::snapd_client::SnapdError> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.bare.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(crate::adapters::snapd_client::SnapdError::Transport {
+                message: "the probe machine has nothing installed".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     fn applied(&self) -> Vec<Vec<String>> {
         self.applied.lock().expect("probe machine lock").clone()
     }
@@ -2568,30 +2627,9 @@ impl ProbeMachine {
         }
         let fixture = |text: &str| Some(text.to_owned());
         if self.myna_only.load(std::sync::atomic::Ordering::SeqCst) {
-            let content = include_str!("../tests/fixtures/snap-interface-content.txt");
-            return match arguments {
-                ["list", "--unicode=never"] => fixture(
-                    "Name  Version  Rev  Tracking  Publisher  Notes\n\
-                     myna  1.2.3  7  latest/edge  canonical**  -\n",
-                ),
-                ["connections", "--all"] => fixture("Interface  Plug  Slot  Notes\n"),
-                ["interface", "content", "--attrs"] => content
-                    .split_once("  - myna-parakeet:provider:")
-                    .map(|(head, _)| head.to_owned()),
-                _ => None,
-            };
+            return None;
         }
         match arguments {
-            ["list", "--unicode=never"] => fixture(
-                "Name  Version  Rev  Tracking  Publisher  Notes\n\
-                 myna  1.2.3  7  latest/stable  canonical**  -\n\
-                 myna-parakeet  0.1.0  8  latest/stable  canonical**  -\n\
-                 myna-whisper  0.1.0  9  latest/stable  canonical**  -\n",
-            ),
-            ["connections", "--all"] => Some(self.connections()),
-            ["interface", "content", "--attrs"] => {
-                fixture(include_str!("../tests/fixtures/snap-interface-content.txt"))
-            }
             ["info", snap] => Some(
                 include_str!("../tests/fixtures/snap-info-parakeet.txt")
                     .replace("myna-parakeet", snap),
@@ -2618,6 +2656,24 @@ impl ProbeMachine {
             ),
             _ => None,
         }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl crate::adapters::snapd_client::SnapdReads for ProbeMachine {
+    async fn installed_snaps(
+        &self,
+        _cancellation: crate::command::CancellationToken,
+    ) -> Result<Vec<crate::diagnostics::InstalledSnap>, crate::adapters::snapd_client::SnapdError>
+    {
+        self.read_snapd().map(|()| self.snap_inventory())
+    }
+
+    async fn content_connections(
+        &self,
+        _cancellation: crate::command::CancellationToken,
+    ) -> Result<crate::domain::ContentConnections, crate::adapters::snapd_client::SnapdError> {
+        self.read_snapd().map(|()| self.connections())
     }
 }
 
@@ -3028,6 +3084,7 @@ fn backends_probe() -> glib::ExitCode {
     let machine = ProbeMachine::new();
     let ui = crate::backend_ui::BackendUi::install_with_ports(
         Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+            std::sync::Arc::new(machine.clone()),
             std::sync::Arc::new(machine.clone()),
         )),
         Rc::new(machine.clone()),
@@ -3941,6 +3998,7 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
             initial.clone(),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
                 std::sync::Arc::new(machine.clone()),
+                std::sync::Arc::new(machine.clone()),
             )),
             Rc::new(machine.clone()),
             extensions.clone(),
@@ -4296,6 +4354,7 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
             }),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
                 std::sync::Arc::new(machine.clone()),
+                std::sync::Arc::new(machine.clone()),
             )),
             Rc::new(machine.clone()),
             ProbeExtensions::new(ExtensionState::Unavailable),
@@ -4365,6 +4424,7 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
                 ..Machine::default()
             }),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+                std::sync::Arc::new(machine.clone()),
                 std::sync::Arc::new(machine.clone()),
             )),
             Rc::new(machine.clone()),
@@ -4468,6 +4528,7 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
             }),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
                 std::sync::Arc::new(machine.clone()),
+                std::sync::Arc::new(machine.clone()),
             )),
             Rc::new(machine.clone()),
             extensions.clone(),
@@ -4515,6 +4576,7 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
             application,
             initial.clone(),
             Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
+                std::sync::Arc::new(machine.clone()),
                 std::sync::Arc::new(machine.clone()),
             )),
             Rc::new(machine.clone()),

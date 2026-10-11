@@ -14,8 +14,8 @@ use myna_config::active_backend::{
 use myna_config::backend_apply::ApplyPreview;
 use myna_config::command::{CancellationToken, CommandRequest};
 use myna_config::domain::{
-    parse_connections, ActiveBackendState, BackendIdentity, BackendSnapshot, BackendSurface,
-    BackendSurfaceError, CommandResult, ConnectionSnapshot,
+    connection_snapshot, ActiveBackendState, BackendIdentity, BackendSnapshot, BackendSurface,
+    BackendSurfaceError, CommandResult, ConnectionSnapshot, ContentConnections,
 };
 use myna_config::operation_gate::{OperationCoordinator, OperationKind};
 use myna_config::ports::{
@@ -23,22 +23,34 @@ use myna_config::ports::{
 };
 use myna_config::snap_changes::{parse_changes, ApplyProgress, ChangeInProgress};
 
+/// What snapd lists: `slots` as `(snap, task)`, `myna:backend` on `connected`.
+fn content_slots(slots: &[(&str, Option<&str>)], connected: &[&str]) -> ConnectionSnapshot {
+    let slots: Vec<_> = slots
+        .iter()
+        .map(|(snap, task)| {
+            let mut attrs = serde_json::json!({ "content": "inference-provider" });
+            if let Some(task) = task {
+                attrs["task"] = (*task).into();
+            }
+            let plugs = if connected.contains(snap) {
+                serde_json::json!([{ "snap": "myna", "plug": "backend" }])
+            } else {
+                serde_json::json!([])
+            };
+            serde_json::json!({ "snap": snap, "slot": "provider", "attrs": attrs, "connections": plugs })
+        })
+        .collect();
+    let connections: ContentConnections =
+        serde_json::from_value(serde_json::json!({ "slots": slots })).unwrap();
+    connection_snapshot(&connections)
+}
+
 fn connections(snaps: &[&str], connected: &[&str]) -> ConnectionSnapshot {
-    let mut rows = String::from("Interface Plug Slot Notes\n");
-    let mut slots = String::from("name: content\nslots:\n");
-    for snap in snaps {
-        if connected.contains(snap) {
-            rows.push_str(&format!(
-                "content[inference-provider] myna:backend {snap}:provider manual\n"
-            ));
-        } else {
-            rows.push_str(&format!("content - {snap}:provider -\n"));
-        }
-        slots.push_str(&format!(
-            "  - {snap}:provider:\n      content: inference-provider\n      task: speech-to-text\n"
-        ));
-    }
-    parse_connections(&rows, &slots).unwrap()
+    let slots: Vec<_> = snaps
+        .iter()
+        .map(|snap| (*snap, Some("speech-to-text")))
+        .collect();
+    content_slots(&slots, connected)
 }
 
 fn argv(plan: &SwitchPlan) -> Vec<(&str, Vec<&str>)> {
@@ -79,15 +91,7 @@ fn plan_connects_from_zero_connections() {
 fn plan_disconnects_a_provider_that_is_no_model() {
     // A machine onboarded before only speech-to-text counted had myna:backend
     // connected to gemma4, an LLM; the switch to a real model drops it.
-    let snapshot = parse_connections(
-        "Interface Plug Slot Notes\n\
-         content[inference-provider] myna:backend gemma4:provider manual\n\
-         content - myna-parakeet:provider -\n",
-        "name: content\nslots:\n  \
-         - gemma4:provider:\n      content: inference-provider\n  \
-         - myna-parakeet:provider:\n      content: inference-provider\n",
-    )
-    .unwrap();
+    let snapshot = content_slots(&[("gemma4", None), ("myna-parakeet", None)], &["gemma4"]);
     assert_eq!(snapshot.active_state(), ActiveBackendState::Disconnected);
     let plan =
         SwitchPlan::new(&snapshot, BackendIdentity::new("myna-parakeet", "provider")).unwrap();

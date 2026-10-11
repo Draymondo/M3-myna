@@ -253,54 +253,72 @@ pub const PROVIDER_CONTENT_ID: &str = "inference-provider";
 /// inference snaps, LLMs such as gemma4, share [`PROVIDER_CONTENT_ID`].
 pub const SPEECH_TO_TEXT_TASK: &str = "speech-to-text";
 
-/// Builds the snapshot from `snap connections --all` and
-/// `snap interface content --attrs`.
-///
-/// A slot's content id comes only from the interface listing. The
-/// `content[<id>]` label on an established row is the plug's, and snapd keeps
-/// a connection across a refresh that changed the plug's content id.
-pub fn parse_connections(
-    connections: &str,
-    content_interface: &str,
-) -> Result<ConnectionSnapshot, ParseError> {
-    let mut lines = connections.lines();
-    let header = lines.next().unwrap_or_default();
-    if !header
-        .split_whitespace()
-        .eq(["Interface", "Plug", "Slot", "Notes"])
-        && !header.split_whitespace().eq(["Interface", "Plug", "Slot"])
-    {
-        return Err(ParseError::new(
-            "snap connections",
-            "missing Interface/Plug/Slot header",
-        ));
-    }
-    let providers = parse_provider_slots(content_interface)?;
+/// One content slot as `GET /v2/connections?select=all&interface=content`
+/// lists it: its own attributes and the plugs connected to it.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ContentSlot {
+    snap: String,
+    slot: String,
+    #[serde(default)]
+    attrs: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    connections: Vec<PlugReference>,
+}
 
+#[derive(Clone, Debug, Deserialize)]
+struct PlugReference {
+    snap: String,
+    plug: String,
+}
+
+/// The `result` of that request. Its `established` and `plugs` lists say
+/// nothing the slots do not.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ContentConnections {
+    #[serde(default)]
+    slots: Vec<ContentSlot>,
+}
+
+impl ContentSlot {
+    /// A [`PROVIDER_CONTENT_ID`] slot of a known Myna family's snap, or one
+    /// whose `task` is [`SPEECH_TO_TEXT_TASK`]. The store rejects the
+    /// attribute, so only the unpublished fake backend carries it.
+    fn is_model(&self) -> bool {
+        let attribute = |key: &str| self.attrs.get(key).and_then(serde_json::Value::as_str);
+        attribute("content") == Some(PROVIDER_CONTENT_ID)
+            && (attribute("task") == Some(SPEECH_TO_TEXT_TASK)
+                || ModelFamily::from_snap_name(&self.snap).is_some())
+    }
+
+    fn feeds_myna(&self) -> bool {
+        self.connections
+            .iter()
+            .any(|plug| plug.snap == "myna" && plug.plug == "backend")
+    }
+}
+
+/// The models on the machine and the ones `myna:backend` is connected to.
+///
+/// A slot's content id is its own attribute, never the plug's: snapd keeps a
+/// connection across a refresh that changed the plug's content id.
+pub fn connection_snapshot(connections: &ContentConnections) -> ConnectionSnapshot {
     let mut discovered = BTreeSet::new();
     let mut connected = BTreeSet::new();
     let mut strays = BTreeSet::new();
-    for line in lines {
-        let columns: Vec<_> = line.split_whitespace().collect();
-        if columns.len() < 3 {
-            continue;
-        }
-        let Some((snap_name, slot_name)) = columns[2].split_once(':') else {
-            continue;
-        };
-        if snap_name.is_empty() || slot_name.is_empty() {
-            continue;
-        }
-        let backend = BackendIdentity::new(snap_name, slot_name);
-        if !providers.contains(&backend) {
-            if columns[1] == "myna:backend" {
+    for slot in &connections.slots {
+        let backend = BackendIdentity::new(&slot.snap, &slot.slot);
+        match (slot.is_model(), slot.feeds_myna()) {
+            (true, true) => {
+                connected.insert(backend.clone());
+                discovered.insert(backend);
+            }
+            (true, false) => {
+                discovered.insert(backend);
+            }
+            (false, true) => {
                 strays.insert(backend);
             }
-            continue;
-        }
-        discovered.insert(backend.clone());
-        if columns[1] == "myna:backend" {
-            connected.insert(backend);
+            (false, false) => {}
         }
     }
 
@@ -310,84 +328,11 @@ pub fn parse_connections(
         [backend] => ActiveBackendState::Connected(backend.clone()),
         backends => ActiveBackendState::MultiplyConnected(backends.to_vec()),
     };
-    Ok(ConnectionSnapshot {
+    ConnectionSnapshot {
         backends: discovered.into_iter().collect(),
         active_state,
         strays: strays.into_iter().collect(),
-    })
-}
-
-/// Slots whose own `content` attribute is [`PROVIDER_CONTENT_ID`] and whose
-/// snap belongs to a known Myna family or whose `task` is
-/// [`SPEECH_TO_TEXT_TASK`]. The store rejects the attribute, so only the
-/// unpublished fake backend carries it. Only the item lines of
-/// the `slots:` section and their direct attributes (six-space indent) are
-/// read; nested attribute maps and lists are skipped.
-fn parse_provider_slots(input: &str) -> Result<BTreeSet<BackendIdentity>, ParseError> {
-    let mut lines = input.lines();
-    let header = lines.next().unwrap_or_default();
-    if !header
-        .split_once(':')
-        .is_some_and(|(key, name)| key == "name" && name.trim() == "content")
-    {
-        return Err(ParseError::new(
-            "snap interface",
-            "missing content interface name",
-        ));
     }
-
-    let mut slots: Vec<(BackendIdentity, SlotAttributes)> = Vec::new();
-    let mut in_slots = false;
-    for line in lines {
-        if !line.starts_with(' ') {
-            in_slots = line == "slots:";
-            continue;
-        }
-        if !in_slots {
-            continue;
-        }
-        if let Some(item) = line.strip_prefix("  - ") {
-            let reference = item.split_whitespace().next().unwrap_or_default();
-            let reference = reference.strip_suffix(':').unwrap_or(reference);
-            // snapd prints a slot named after the interface as the bare snap.
-            let (snap_name, slot_name) =
-                reference.split_once(':').unwrap_or((reference, "content"));
-            slots.push((
-                BackendIdentity::new(snap_name, slot_name),
-                SlotAttributes::default(),
-            ));
-            continue;
-        }
-        let Some(attribute) = line.strip_prefix("      ") else {
-            continue;
-        };
-        if attribute.starts_with(' ') {
-            continue;
-        }
-        if let (Some((_, attributes)), Some((key, value))) =
-            (slots.last_mut(), attribute.split_once(':'))
-        {
-            match key {
-                "content" => attributes.provider = value.trim() == PROVIDER_CONTENT_ID,
-                "task" => attributes.speech = value.trim() == SPEECH_TO_TEXT_TASK,
-                _ => {}
-            }
-        }
-    }
-    Ok(slots
-        .into_iter()
-        .filter(|(slot, attributes)| {
-            attributes.provider
-                && (attributes.speech || ModelFamily::from_snap_name(slot.snap_name()).is_some())
-        })
-        .map(|(slot, _)| slot)
-        .collect())
-}
-
-#[derive(Default)]
-struct SlotAttributes {
-    provider: bool,
-    speech: bool,
 }
 
 pub fn parse_modelctl_config(input: &str) -> Result<BackendConfiguration, ParseError> {

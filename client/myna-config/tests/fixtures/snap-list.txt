@@ -1,4 +1,0 @@
-Name  Version  Rev  Tracking  Publisher  Notes
-myna  1.2.3  7  latest/stable  canonical**  -
-myna-parakeet  0.1.0  8  latest/stable  canonical**  -
-myna-whisper  0.1.0  9  latest/stable  canonical**  -

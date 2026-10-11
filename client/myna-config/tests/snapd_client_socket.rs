@@ -14,12 +14,14 @@ use std::time::{Duration, Instant};
 use gtk4::glib::MainContext;
 use myna_config::active_backend::{myna_restart_request, SwitchPlan};
 use myna_config::adapters::snapd_client::{
-    InterfaceAction, SnapdClient, SnapdError, SnapdOutcome, SnapdTimeoutContext, SnapdTimeouts,
-    UnixSocketSnapdClient,
+    InterfaceAction, SnapdClient, SnapdError, SnapdOutcome, SnapdReads, SnapdTimeoutContext,
+    SnapdTimeouts, UnixSocketSnapdClient,
 };
 use myna_config::adapters::system_configurator::PkexecSystemConfigurator;
 use myna_config::command::{CancellationToken, CommandOutput, FakeCommandRunner};
-use myna_config::domain::{parse_connections, BackendIdentity};
+use myna_config::domain::{
+    connection_snapshot, ActiveBackendState, BackendIdentity, ConnectionSnapshot,
+};
 use myna_config::ports::{SystemConfigurator, SystemConfiguratorError};
 use myna_config::snap_changes::{ApplyProgress, ChangeInProgress};
 
@@ -655,13 +657,13 @@ fn backend_switch_requests_disconnect_connect_then_restarts_the_user_service() {
         "",
     ))]));
     let adapter = PkexecSystemConfigurator::with_snapd_client(runner.clone(), client);
-    let snapshot = parse_connections(
-        "Interface Plug Slot Notes\n\
-         content[inference-provider] myna:backend old:provider manual\n\
-         content - new:provider -\n",
-        "name: content\nslots:\n  - old:provider:\n      content: inference-provider\n      task: speech-to-text\n  - new:provider:\n      content: inference-provider\n      task: speech-to-text\n",
-    )
-    .unwrap();
+    let snapshot = ConnectionSnapshot::new(
+        vec![
+            BackendIdentity::new("new", "provider"),
+            BackendIdentity::new("old", "provider"),
+        ],
+        ActiveBackendState::Connected(BackendIdentity::new("old", "provider")),
+    );
     let plan = SwitchPlan::new(&snapshot, BackendIdentity::new("new", "provider")).unwrap();
 
     let completed =
@@ -689,12 +691,10 @@ fn noop_backend_switch_makes_no_snapd_requests() {
     );
     let adapter =
         PkexecSystemConfigurator::with_snapd_client(Arc::new(FakeCommandRunner::default()), client);
-    let snapshot = parse_connections(
-        "Interface Plug Slot Notes\n\
-         content[inference-provider] myna:backend new:provider manual\n",
-        "name: content\nslots:\n  - new:provider:\n      content: inference-provider\n      task: speech-to-text\n",
-    )
-    .unwrap();
+    let snapshot = ConnectionSnapshot::new(
+        vec![BackendIdentity::new("new", "provider")],
+        ActiveBackendState::Connected(BackendIdentity::new("new", "provider")),
+    );
     let plan = SwitchPlan::new(&snapshot, BackendIdentity::new("new", "provider")).unwrap();
 
     let completed =
@@ -817,6 +817,80 @@ fn an_unreadable_system_information_is_an_error() {
             ..
         })
     ));
+}
+
+fn sync_result(result: &str) -> String {
+    http_body(
+        200,
+        "OK",
+        &format!(r#"{{"type":"sync","status-code":200,"status":"OK","result":{result}}}"#),
+    )
+}
+
+fn answering(request: &str, response: String) -> FakeSnapd {
+    FakeSnapd::start(vec![Step {
+        request_path_contains: request.to_owned(),
+        response,
+        delay: None,
+        close_early: false,
+    }])
+}
+
+#[test]
+fn the_installed_snaps_are_read_as_json() {
+    let fake = answering(
+        "GET /v2/snaps ",
+        sync_result(include_str!("fixtures/snapd-snaps.json")),
+    );
+
+    let snaps = block_on(fake.client().installed_snaps(CancellationToken::new())).unwrap();
+
+    let names: Vec<_> = snaps.iter().map(|snap| snap.name.as_str()).collect();
+    assert_eq!(names, ["myna-parakeet", "myna-whisper", "myna", "snapd"]);
+    assert_eq!(snaps[2].version, "0.2.1");
+    let calls = fake.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].starts_with("GET /v2/snaps HTTP/1.1\r\n"));
+}
+
+#[test]
+fn every_content_slot_is_read_with_its_connections() {
+    let fake = answering(
+        "GET /v2/connections?select=all&interface=content ",
+        sync_result(include_str!("fixtures/snapd-connections.json")),
+    );
+
+    let connections =
+        block_on(fake.client().content_connections(CancellationToken::new())).unwrap();
+
+    let snapshot = connection_snapshot(&connections);
+    assert_eq!(
+        snapshot.active_state(),
+        ActiveBackendState::Connected(BackendIdentity::new("myna-parakeet", "provider"))
+    );
+    assert_eq!(snapshot.backends().len(), 2);
+    let calls = fake.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].starts_with("GET /v2/connections?select=all&interface=content HTTP/1.1\r\n"));
+}
+
+#[test]
+fn a_result_of_another_shape_is_a_protocol_error() {
+    let fake = answering("GET /v2/connections", sync_result(r#"{"slots":"none"}"#));
+    let error = block_on(fake.client().content_connections(CancellationToken::new())).unwrap_err();
+    assert!(
+        matches!(&error, SnapdError::Protocol { message, .. }
+            if message.starts_with("could not parse the content connections")),
+        "{error:?}"
+    );
+
+    let fake = answering("GET /v2/snaps", sync_result(r#"[{"name":"myna"}]"#));
+    let error = block_on(fake.client().installed_snaps(CancellationToken::new())).unwrap_err();
+    assert!(
+        matches!(&error, SnapdError::Protocol { message, .. }
+            if message.starts_with("could not parse the snaps")),
+        "{error:?}"
+    );
 }
 
 fn step(request: &str, response: String, delay: Option<Duration>) -> Step {

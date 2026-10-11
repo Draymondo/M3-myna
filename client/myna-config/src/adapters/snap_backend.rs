@@ -3,12 +3,13 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
+use crate::adapters::snapd_client::{SnapdError, SnapdReads};
 use crate::command::{
     CancellationToken, CommandError, CommandOutput, CommandRequest, CommandRunner,
 };
-use crate::diagnostics::{parse_snap_list, InstalledSnap};
+use crate::diagnostics::InstalledSnap;
 use crate::domain::{
-    parse_connections, parse_engine_options, parse_model_options, parse_modelctl_config,
+    connection_snapshot, parse_engine_options, parse_model_options, parse_modelctl_config,
     parse_status, BackendIdentity, BackendSnapshot, BackendSurface, BackendSurfaceError,
     ConnectionSnapshot, ParseError,
 };
@@ -18,6 +19,7 @@ const MAX_MODELCTL_CANDIDATES: usize = 4;
 
 pub struct SnapBackendRepository {
     runner: Arc<dyn CommandRunner>,
+    snapd: Arc<dyn SnapdReads>,
     modelctl_cache: Mutex<ModelctlCache>,
 }
 
@@ -39,9 +41,10 @@ enum ModelctlResolution {
 }
 
 impl SnapBackendRepository {
-    pub fn new(runner: Arc<dyn CommandRunner>) -> Self {
+    pub fn new(runner: Arc<dyn CommandRunner>, snapd: Arc<dyn SnapdReads>) -> Self {
         Self {
             runner,
+            snapd,
             modelctl_cache: Mutex::new(ModelctlCache::default()),
         }
     }
@@ -254,30 +257,21 @@ impl BackendRepository for SnapBackendRepository {
         &self,
         cancellation: CancellationToken,
     ) -> Result<Vec<InstalledSnap>, BackendSurfaceError> {
-        let request = CommandRequest::new("snap".to_owned(), strings(&["list", "--unicode=never"]))
-            .with_environment(BTreeMap::from([("LC_ALL".to_owned(), "C".to_owned())]));
-        let output = self
-            .runner
-            .run(request, cancellation)
+        self.snapd
+            .installed_snaps(cancellation)
             .await
-            .map_err(|error| command_error(BackendSurface::SnapInventory, "snap", error))?;
-        parse_snap_list(output.stdout()).map_err(|error| {
-            BackendSurfaceError::new(BackendSurface::SnapInventory, error.to_string(), "")
-        })
+            .map_err(|error| snapd_error(BackendSurface::SnapInventory, error))
     }
 
     async fn discover(
         &self,
         cancellation: CancellationToken,
     ) -> Result<ConnectionSnapshot, BackendSurfaceError> {
-        let connections = self
-            .read_connections_surface(&["connections", "--all"], cancellation.clone())
-            .await?;
-        let content_interface = self
-            .read_connections_surface(&["interface", "content", "--attrs"], cancellation)
-            .await?;
-        parse_connections(&connections, &content_interface)
-            .map_err(|error| parse_error(BackendSurface::Connections, error))
+        self.snapd
+            .content_connections(cancellation)
+            .await
+            .map(|connections| connection_snapshot(&connections))
+            .map_err(|error| snapd_error(BackendSurface::Connections, error))
     }
 
     async fn read_snapshot(
@@ -330,23 +324,6 @@ impl BackendRepository for SnapBackendRepository {
             cache.apps.clear();
         }
         self.discover(cancellation).await
-    }
-}
-
-impl SnapBackendRepository {
-    async fn read_connections_surface(
-        &self,
-        arguments: &[&str],
-        cancellation: CancellationToken,
-    ) -> Result<String, BackendSurfaceError> {
-        let request = CommandRequest::new("snap".to_owned(), strings(arguments))
-            .with_environment(BTreeMap::from([("LC_ALL".to_owned(), "C".to_owned())]));
-        let output = self
-            .runner
-            .run(request, cancellation)
-            .await
-            .map_err(|error| command_error(BackendSurface::Connections, "snap", error))?;
-        Ok(output.stdout().to_owned())
     }
 }
 
@@ -410,6 +387,10 @@ fn strings(values: &[&str]) -> Vec<String> {
 }
 
 fn parse_error(surface: BackendSurface, error: ParseError) -> BackendSurfaceError {
+    BackendSurfaceError::new(surface, error.to_string(), "")
+}
+
+fn snapd_error(surface: BackendSurface, error: SnapdError) -> BackendSurfaceError {
     BackendSurfaceError::new(surface, error.to_string(), "")
 }
 

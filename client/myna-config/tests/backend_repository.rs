@@ -7,16 +7,21 @@ use std::task::{Poll, Waker};
 
 use async_trait::async_trait;
 use myna_config::adapters::snap_backend::SnapBackendRepository;
+use myna_config::adapters::snapd_client::{SnapdError, SnapdReads};
 use myna_config::command::{
     CancellationToken, CommandError, CommandOutput, CommandRequest, CommandRunner,
     FakeCommandRunner,
 };
-use myna_config::diagnostics::BACKEND_REFRESH_PROCESS_BUDGET;
-use myna_config::domain::{ActiveBackendState, BackendIdentity, BackendSurface, ConfigValue};
+use myna_config::diagnostics::{InstalledSnap, BACKEND_REFRESH_PROCESS_BUDGET};
+use myna_config::domain::{
+    ActiveBackendState, BackendIdentity, BackendSurface, ConfigValue, ContentConnections,
+};
 use myna_config::ports::BackendRepository;
 
-const CONNECTIONS: &str = include_str!("fixtures/snap-connections.txt");
-const CONTENT_INTERFACE: &str = include_str!("fixtures/snap-interface-content.txt");
+/// `GET /v2/snaps` and `GET /v2/connections?select=all&interface=content`
+/// results from a VM with Parakeet connected and Whisper installed, trimmed.
+const SNAPS: &str = include_str!("fixtures/snapd-snaps.json");
+const CONNECTIONS: &str = include_str!("fixtures/snapd-connections.json");
 const GET: &str = include_str!("fixtures/modelctl-get.txt");
 const VERSION: &str = include_str!("fixtures/modelctl-version.json");
 const STATUS: &str = include_str!("fixtures/modelctl-status.json");
@@ -39,36 +44,110 @@ fn failed(command: &str) -> Result<CommandOutput, CommandError> {
     })
 }
 
+/// snapd answering every read with these results, counting the reads.
+struct FakeSnapd {
+    snaps: Result<Vec<InstalledSnap>, SnapdError>,
+    connections: Result<ContentConnections, SnapdError>,
+    reads: Mutex<usize>,
+}
+
+impl FakeSnapd {
+    fn answering(
+        snaps: Result<Vec<InstalledSnap>, SnapdError>,
+        connections: Result<ContentConnections, SnapdError>,
+    ) -> Self {
+        Self {
+            snaps,
+            connections,
+            reads: Mutex::new(0),
+        }
+    }
+
+    fn reads(&self) -> usize {
+        *self.reads.lock().unwrap()
+    }
+}
+
+impl Default for FakeSnapd {
+    fn default() -> Self {
+        Self::answering(
+            Ok(serde_json::from_str(SNAPS).unwrap()),
+            Ok(serde_json::from_str(CONNECTIONS).unwrap()),
+        )
+    }
+}
+
+#[async_trait(?Send)]
+impl SnapdReads for FakeSnapd {
+    async fn installed_snaps(
+        &self,
+        _cancellation: CancellationToken,
+    ) -> Result<Vec<InstalledSnap>, SnapdError> {
+        *self.reads.lock().unwrap() += 1;
+        self.snaps.clone()
+    }
+
+    async fn content_connections(
+        &self,
+        _cancellation: CancellationToken,
+    ) -> Result<ContentConnections, SnapdError> {
+        *self.reads.lock().unwrap() += 1;
+        self.connections.clone()
+    }
+}
+
 fn repository(
     outcomes: impl IntoIterator<Item = Result<CommandOutput, CommandError>>,
 ) -> (SnapBackendRepository, FakeCommandRunner) {
     let runner = FakeCommandRunner::scripted(outcomes);
-    (SnapBackendRepository::new(Arc::new(runner.clone())), runner)
+    (
+        SnapBackendRepository::new(Arc::new(runner.clone()), Arc::new(FakeSnapd::default())),
+        runner,
+    )
 }
 
+fn snapd_repository(
+    snapd: FakeSnapd,
+) -> (SnapBackendRepository, Arc<FakeSnapd>, FakeCommandRunner) {
+    let runner = FakeCommandRunner::default();
+    let snapd = Arc::new(snapd);
+    (
+        SnapBackendRepository::new(Arc::new(runner.clone()), snapd.clone()),
+        snapd,
+        runner,
+    )
+}
+
+fn snapd_refused() -> SnapdError {
+    SnapdError::Transport {
+        message: "connection refused".to_owned(),
+    }
+}
+
+/// snap translates its tables' headers, so the inventory and discovery read
+/// snapd's JSON and never parse the `snap` CLI.
 #[test]
-fn installed_snap_inventory_runs_once_and_preserves_versions() {
-    let (repository, runner) = repository([Ok(CommandOutput::new(
-        Some(0),
-        "Name  Version  Rev  Tracking  Publisher  Notes\n\
-         myna  1.2.3  7  latest/stable  canonical**  -\n\
-         myna-parakeet  2.0  8  latest/stable  canonical**  -\n\
-         community-asr  3.0  9  latest/stable  example  -\n",
-        "",
-    ))]);
+fn installed_snap_inventory_reads_snapd_once_and_preserves_versions() {
+    let (repository, snapd, runner) = snapd_repository(FakeSnapd::default());
 
     let snaps =
         block_on(repository.installed_snaps(CancellationToken::new())).expect("snap inventory");
 
-    assert_eq!(snaps.len(), 3);
-    assert_eq!(snaps[0].name, "myna");
-    assert_eq!(snaps[0].version, "1.2.3");
-    assert_eq!(snaps[2].name, "community-asr");
-    assert_eq!(snaps[2].version, "3.0");
-    let calls = runner.calls();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].executable(), "snap");
-    assert_eq!(calls[0].arguments(), ["list", "--unicode=never"]);
+    let names: Vec<_> = snaps
+        .iter()
+        .map(|snap| (snap.name.as_str(), snap.version.as_str()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("myna-parakeet", "0.1.0+git183.6fd73f42"),
+            ("myna-whisper", "0.1.0+git183.6fd73f42"),
+            ("myna", "0.2.1"),
+            ("snapd", "2.77.1"),
+        ]
+    );
+    assert_eq!(snapd.reads(), 1);
+    assert!(runner.calls().is_empty(), "ran {:?}", runner.calls());
 }
 
 fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
@@ -84,10 +163,7 @@ fn argv(call: &CommandRequest) -> (&str, Vec<&str>) {
 
 #[test]
 fn discovers_installed_connected_and_unconnected_backends_once() {
-    let duplicated = format!(
-        "{CONNECTIONS}content[inference-provider] myna:backend myna-parakeet:provider manual\n"
-    );
-    let (repository, runner) = repository([ok(&duplicated), ok(CONTENT_INTERFACE)]);
+    let (repository, snapd, runner) = snapd_repository(FakeSnapd::default());
 
     let discovered =
         block_on(repository.discover(CancellationToken::new())).expect("discovery succeeds");
@@ -103,52 +179,41 @@ fn discovers_installed_connected_and_unconnected_backends_once() {
         discovered.active_state(),
         ActiveBackendState::Connected(BackendIdentity::new("myna-parakeet", "provider"))
     );
-    assert_eq!(
-        runner.calls().iter().map(argv).collect::<Vec<_>>(),
-        [
-            ("snap", vec!["connections", "--all"]),
-            ("snap", vec!["interface", "content", "--attrs"])
-        ]
-    );
-    for call in runner.calls() {
-        assert_eq!(
-            call.environment().get("LC_ALL").map(String::as_str),
-            Some("C")
-        );
-    }
+    assert_eq!(snapd.reads(), 1);
+    assert!(runner.calls().is_empty(), "ran {:?}", runner.calls());
 }
 
 #[test]
 fn no_installed_backends_is_a_successful_empty_discovery() {
-    let (repository, runner) = repository([
-        ok(include_str!("fixtures/snap-connections-empty.txt")),
-        ok("name: content\n"),
-    ]);
+    let (repository, _, _) = snapd_repository(FakeSnapd::answering(
+        Ok(Vec::new()),
+        Ok(ContentConnections::default()),
+    ));
 
     let discovered = block_on(repository.discover(CancellationToken::new())).unwrap();
 
     assert!(discovered.backends().is_empty());
     assert_eq!(discovered.active_state(), ActiveBackendState::Disconnected);
-    assert_eq!(runner.calls().len(), 2);
 }
 
 #[test]
-fn discovery_and_installed_app_listing_fail_explicitly() {
-    let (failed_repository, _) = repository([failed("connections")]);
-    let discovery = block_on(failed_repository.discover(CancellationToken::new())).unwrap_err();
+fn discovery_inventory_and_installed_app_listing_fail_explicitly() {
+    let (refused, _, _) = snapd_repository(FakeSnapd::answering(
+        Err(snapd_refused()),
+        Err(snapd_refused()),
+    ));
+    let discovery = block_on(refused.discover(CancellationToken::new())).unwrap_err();
     assert_eq!(discovery.surface(), BackendSurface::Connections);
-    assert_eq!(discovery.stderr(), "connections failed");
-
-    let (failed_repository, _) = repository([ok(CONNECTIONS), failed("interface")]);
-    let discovery = block_on(failed_repository.discover(CancellationToken::new())).unwrap_err();
-    assert_eq!(discovery.surface(), BackendSurface::Connections);
-    assert_eq!(discovery.stderr(), "interface failed");
-
-    let (unparseable_repository, _) = repository([ok(CONNECTIONS), ok("not snap output\n")]);
-    let discovery =
-        block_on(unparseable_repository.discover(CancellationToken::new())).unwrap_err();
-    assert_eq!(discovery.surface(), BackendSurface::Connections);
-    assert!(discovery.message().starts_with("snap interface:"));
+    assert_eq!(
+        discovery.message(),
+        "snapd transport error: connection refused"
+    );
+    let inventory = block_on(refused.installed_snaps(CancellationToken::new())).unwrap_err();
+    assert_eq!(inventory.surface(), BackendSurface::SnapInventory);
+    assert_eq!(
+        inventory.message(),
+        "snapd transport error: connection refused"
+    );
 
     let (repository, runner) = repository([failed("snap info")]);
     let snapshot = block_on(repository.read_snapshot(
@@ -315,8 +380,6 @@ fn cached_apps_are_verified_and_invalidated_on_failure_and_refresh() {
         ok(GET),
         ok(MODELS),
         ok(ENGINES),
-        ok(include_str!("fixtures/snap-connections-empty.txt")),
-        ok("name: content\n"),
         ok(PARAKEET_INFO),
         ok(VERSION),
         ok(STATUS),
@@ -564,8 +627,6 @@ impl CommandRunner for RefreshRaceRunner {
         let arguments = request.arguments();
         match arguments.first().map(String::as_str) {
             Some("info") => ok(PARAKEET_INFO),
-            Some("connections") => ok(include_str!("fixtures/snap-connections-empty.txt")),
-            Some("interface") => ok("name: content\n"),
             Some("run") if arguments.get(2).map(String::as_str) == Some("version") => {
                 if !self.state.status_started.swap(true, Ordering::SeqCst) {
                     poll_fn(|context| {
@@ -597,7 +658,8 @@ impl CommandRunner for RefreshRaceRunner {
 #[test]
 fn refresh_prevents_an_in_flight_resolver_from_repopulating_the_cache() {
     let runner = RefreshRaceRunner::new();
-    let repository = SnapBackendRepository::new(Arc::new(runner.clone()));
+    let repository =
+        SnapBackendRepository::new(Arc::new(runner.clone()), Arc::new(FakeSnapd::default()));
     let backend = BackendIdentity::new("myna-parakeet", "provider");
 
     block_on(async {

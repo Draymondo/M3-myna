@@ -569,9 +569,7 @@ mod tests {
     use crate::apply_plan::plan_output;
     use crate::backend_controller::BackendController;
     use crate::command::{CommandError, CommandOutput, FakeCommandRunner};
-    use crate::domain::{
-        parse_connections, parse_engine_options, parse_model_options, parse_modelctl_config,
-    };
+    use crate::domain::{parse_engine_options, parse_model_options, parse_modelctl_config};
 
     const STATUS: &str = include_str!("../tests/fixtures/modelctl-status.json");
     const MODELS: &str = include_str!("../tests/fixtures/modelctl-list-models.json");
@@ -622,11 +620,16 @@ mod tests {
         let request = controller.begin_discovery();
         controller.complete_discovery(
             request,
-            Ok(parse_connections(
-                "Interface Plug Slot Notes\ncontent[inference-provider] myna:backend myna-parakeet:provider manual\n",
-                "name: content\nslots:\n  - myna-parakeet:provider:\n      content: inference-provider\n",
-            )
-            .unwrap()),
+            Ok(crate::domain::ConnectionSnapshot::new(
+                vec![crate::domain::BackendIdentity::new(
+                    "myna-parakeet",
+                    "provider",
+                )],
+                crate::domain::ActiveBackendState::Connected(crate::domain::BackendIdentity::new(
+                    "myna-parakeet",
+                    "provider",
+                )),
+            )),
         );
         let request = controller.begin_snapshot("myna-parakeet").unwrap();
         controller.complete_snapshot(request, snapshot);
@@ -1012,11 +1015,16 @@ mod tests {
         let request = controller.begin_discovery();
         controller.complete_discovery(
             request,
-            Ok(parse_connections(
-                "Interface Plug Slot Notes\ncontent[inference-provider] myna:backend myna-parakeet:provider manual\n",
-                "name: content\nslots:\n  - myna-parakeet:provider:\n      content: inference-provider\n",
-            )
-            .unwrap()),
+            Ok(crate::domain::ConnectionSnapshot::new(
+                vec![crate::domain::BackendIdentity::new(
+                    "myna-parakeet",
+                    "provider",
+                )],
+                crate::domain::ActiveBackendState::Connected(crate::domain::BackendIdentity::new(
+                    "myna-parakeet",
+                    "provider",
+                )),
+            )),
         );
         let mut snapshot = snapshot_with_configuration("verbose: false\n");
         snapshot.set_identity(backend());
@@ -1073,11 +1081,16 @@ mod tests {
         let request = controller.begin_discovery();
         controller.complete_discovery(
             request,
-            Ok(parse_connections(
-                "Interface Plug Slot Notes\ncontent[inference-provider] myna:backend myna-parakeet:provider manual\n",
-                "name: content\nslots:\n  - myna-parakeet:provider:\n      content: inference-provider\n",
-            )
-            .unwrap()),
+            Ok(crate::domain::ConnectionSnapshot::new(
+                vec![crate::domain::BackendIdentity::new(
+                    "myna-parakeet",
+                    "provider",
+                )],
+                crate::domain::ActiveBackendState::Connected(crate::domain::BackendIdentity::new(
+                    "myna-parakeet",
+                    "provider",
+                )),
+            )),
         );
         let request = controller.begin_snapshot("myna-parakeet").unwrap();
         controller.complete_snapshot(

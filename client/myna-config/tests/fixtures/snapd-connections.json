@@ -1,0 +1,156 @@
+{
+  "established": [
+    {
+      "slot": {
+        "snap": "myna-parakeet",
+        "slot": "provider"
+      },
+      "plug": {
+        "snap": "myna",
+        "plug": "backend"
+      },
+      "interface": "content",
+      "manual": true,
+      "slot-attrs": {
+        "content": "inference-provider",
+        "source": {
+          "write": [
+            "$SNAP_COMMON/share/provider"
+          ]
+        }
+      },
+      "plug-attrs": {
+        "content": "inference-provider",
+        "target": "$SNAP_DATA/backend"
+      }
+    },
+    {
+      "slot": {
+        "snap": "gnome-46-2404",
+        "slot": "gnome-46-2404"
+      },
+      "plug": {
+        "snap": "myna",
+        "plug": "gnome-46-2404"
+      },
+      "interface": "content",
+      "slot-attrs": {
+        "content": "gnome-46-2404",
+        "read": [
+          "/"
+        ]
+      },
+      "plug-attrs": {
+        "content": "gnome-46-2404",
+        "default-provider": "gnome-46-2404",
+        "target": "$SNAP/gnome-platform"
+      }
+    }
+  ],
+  "plugs": [
+    {
+      "snap": "myna",
+      "plug": "backend",
+      "interface": "content",
+      "attrs": {
+        "content": "inference-provider",
+        "target": "$SNAP_DATA/backend"
+      },
+      "apps": [
+        "status",
+        "testbed",
+        "myna"
+      ],
+      "connections": [
+        {
+          "snap": "myna-parakeet",
+          "slot": "provider"
+        }
+      ]
+    },
+    {
+      "snap": "myna",
+      "plug": "gnome-46-2404",
+      "interface": "content",
+      "attrs": {
+        "content": "gnome-46-2404",
+        "default-provider": "gnome-46-2404",
+        "target": "$SNAP/gnome-platform"
+      },
+      "apps": [
+        "toggle",
+        "install-shortcut",
+        "status",
+        "config",
+        "testbed",
+        "hud",
+        "myna"
+      ],
+      "connections": [
+        {
+          "snap": "gnome-46-2404",
+          "slot": "gnome-46-2404"
+        }
+      ]
+    }
+  ],
+  "slots": [
+    {
+      "snap": "gnome-46-2404",
+      "slot": "gnome-46-2404",
+      "interface": "content",
+      "attrs": {
+        "content": "gnome-46-2404",
+        "read": [
+          "/"
+        ]
+      },
+      "connections": [
+        {
+          "snap": "myna",
+          "plug": "gnome-46-2404"
+        }
+      ]
+    },
+    {
+      "snap": "myna-parakeet",
+      "slot": "provider",
+      "interface": "content",
+      "attrs": {
+        "content": "inference-provider",
+        "source": {
+          "write": [
+            "$SNAP_COMMON/share/provider"
+          ]
+        }
+      },
+      "apps": [
+        "parakeet",
+        "server"
+      ],
+      "connections": [
+        {
+          "snap": "myna",
+          "plug": "backend"
+        }
+      ]
+    },
+    {
+      "snap": "myna-whisper",
+      "slot": "provider",
+      "interface": "content",
+      "attrs": {
+        "content": "inference-provider",
+        "source": {
+          "write": [
+            "$SNAP_COMMON/share/provider"
+          ]
+        }
+      },
+      "apps": [
+        "whisper",
+        "server"
+      ]
+    }
+  ]
+}

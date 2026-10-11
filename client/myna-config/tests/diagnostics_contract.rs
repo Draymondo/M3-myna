@@ -1,7 +1,17 @@
 use myna_config::diagnostics::{
-    parse_snap_list, present_diagnostics, BackendDiagnostic, DiagnosticConnection, DiagnosticInput,
+    present_diagnostics, BackendDiagnostic, DiagnosticConnection, DiagnosticInput, InstalledSnap,
     OnboardingState,
 };
+
+fn installed(snaps: &[(&str, &str)]) -> Vec<InstalledSnap> {
+    snaps
+        .iter()
+        .map(|(name, version)| InstalledSnap {
+            name: (*name).to_owned(),
+            version: (*version).to_owned(),
+        })
+        .collect()
+}
 
 /// Whether a field line labelled `label` has a value starting with `value`,
 /// however wide the label column is.
@@ -23,10 +33,7 @@ fn presenter_distinguishes_no_myna_and_no_backend_onboarding() {
     assert_eq!(no_myna.onboarding(), OnboardingState::NoMyna);
 
     let no_backend = present_diagnostics(DiagnosticInput {
-        installed_snaps: parse_snap_list(
-            "Name  Version  Rev  Tracking  Publisher  Notes\nmyna  1.2.3  7  latest/stable  canonical**  -\n",
-        )
-        .unwrap(),
+        installed_snaps: installed(&[("myna", "1.2.3")]),
         inventory_complete: true,
         ..DiagnosticInput::default()
     });
@@ -35,12 +42,7 @@ fn presenter_distinguishes_no_myna_and_no_backend_onboarding() {
 
 #[test]
 fn onboarding_uses_discovered_backend_identities_not_snap_name_prefixes() {
-    let installed = |rows| parse_snap_list(rows).unwrap();
-    let myna_and_unrelated = installed(
-        "Name  Version  Rev  Tracking  Publisher  Notes\n\
-         myna  1.2.3  7  latest/stable  canonical**  -\n\
-         myna-not-a-backend  4.0  8  latest/stable  example  -\n",
-    );
+    let myna_and_unrelated = installed(&[("myna", "1.2.3"), ("myna-not-a-backend", "4.0")]);
 
     let no_backend = present_diagnostics(DiagnosticInput {
         installed_snaps: myna_and_unrelated.clone(),
@@ -62,10 +64,7 @@ fn onboarding_uses_discovered_backend_identities_not_snap_name_prefixes() {
     assert_eq!(discovered_backend.onboarding(), OnboardingState::Ready);
 
     let missing_myna = present_diagnostics(DiagnosticInput {
-        installed_snaps: installed(
-            "Name  Version  Rev  Tracking  Publisher  Notes\n\
-             community-asr  1.0  3  latest/stable  example  -\n",
-        ),
+        installed_snaps: installed(&[("community-asr", "1.0")]),
         inventory_complete: true,
         backends: vec![BackendDiagnostic {
             snap_name: "community-asr".into(),
@@ -76,10 +75,7 @@ fn onboarding_uses_discovered_backend_identities_not_snap_name_prefixes() {
     assert_eq!(missing_myna.onboarding(), OnboardingState::NoMyna);
 
     let incomplete = present_diagnostics(DiagnosticInput {
-        installed_snaps: installed(
-            "Name  Version  Rev  Tracking  Publisher  Notes\n\
-             myna  1.2.3  7  latest/stable  canonical**  -\n",
-        ),
+        installed_snaps: installed(&[("myna", "1.2.3")]),
         backends: vec![BackendDiagnostic {
             snap_name: "community-asr".into(),
             ..BackendDiagnostic::default()
@@ -92,12 +88,7 @@ fn onboarding_uses_discovered_backend_identities_not_snap_name_prefixes() {
 #[test]
 fn only_discovered_backends_are_reported() {
     let report = present_diagnostics(DiagnosticInput {
-        installed_snaps: parse_snap_list(
-            "Name  Version  Rev  Tracking  Publisher  Notes\n\
-             myna  1.2.3  7  latest/stable  canonical**  -\n\
-             myna-unrelated  4.0  10  latest/stable  example  -\n",
-        )
-        .unwrap(),
+        installed_snaps: installed(&[("myna", "1.2.3"), ("myna-unrelated", "4.0")]),
         inventory_complete: true,
         backends: vec![BackendDiagnostic {
             snap_name: "community-asr".into(),
@@ -122,23 +113,9 @@ fn inventory_error_does_not_claim_myna_is_absent() {
 }
 
 #[test]
-fn snap_list_parser_accepts_empty_and_reports_malformed_rows() {
-    assert!(
-        parse_snap_list("No snaps are installed yet. Try 'snap install hello-world'.\n")
-            .unwrap()
-            .is_empty()
-    );
-    assert!(parse_snap_list("Name Version\nmyna\n").is_err());
-}
-
-#[test]
 fn diagnostics_status_values_are_translatable_user_facing_labels() {
     let report = present_diagnostics(DiagnosticInput {
-        installed_snaps: parse_snap_list(
-            "Name  Version  Rev  Tracking  Publisher  Notes\n\
-             myna  1.2.3  7  latest/stable  canonical**  -\n",
-        )
-        .unwrap(),
+        installed_snaps: installed(&[("myna", "1.2.3")]),
         inventory_complete: true,
         backends: vec![BackendDiagnostic {
             snap_name: "community-asr".into(),
@@ -175,11 +152,7 @@ fn diagnostics_status_values_are_translatable_user_facing_labels() {
 #[test]
 fn failed_backend_discovery_does_not_claim_onboarding_is_complete() {
     let report = present_diagnostics(DiagnosticInput {
-        installed_snaps: parse_snap_list(
-            "Name  Version  Rev  Tracking  Publisher  Notes\n\
-             myna  1.2.3  7  latest/stable  canonical**  -\n",
-        )
-        .unwrap(),
+        installed_snaps: installed(&[("myna", "1.2.3")]),
         inventory_complete: true,
         problems: vec!["Model connections: discovery failed".into()],
         ..DiagnosticInput::default()

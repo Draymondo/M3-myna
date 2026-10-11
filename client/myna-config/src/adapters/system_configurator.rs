@@ -693,7 +693,9 @@ mod tests {
     use super::*;
     use crate::apply_plan::plan_output;
     use crate::command::{CommandOutput, FakeCommandRunner};
-    use crate::domain::{parse_connections, BackendIdentity, ConfigValue, StagedChange};
+    use crate::domain::{
+        ActiveBackendState, BackendIdentity, ConfigValue, ConnectionSnapshot, StagedChange,
+    };
 
     fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
         MainContext::new().block_on(future)
@@ -1202,24 +1204,24 @@ mod tests {
     }
 
     fn switch_plan() -> SwitchPlan {
-        let snapshot = parse_connections(
-            "Interface Plug Slot Notes\n\
-             content[inference-provider] myna:backend old:provider manual\n\
-             content - new:provider -\n",
-            "name: content\nslots:\n  - old:provider:\n      content: inference-provider\n      task: speech-to-text\n  - new:provider:\n      content: inference-provider\n      task: speech-to-text\n",
-        )
-        .unwrap();
+        let snapshot = ConnectionSnapshot::new(
+            vec![
+                BackendIdentity::new("new", "provider"),
+                BackendIdentity::new("old", "provider"),
+            ],
+            ActiveBackendState::Connected(BackendIdentity::new("old", "provider")),
+        );
         SwitchPlan::new(&snapshot, BackendIdentity::new("new", "provider")).unwrap()
     }
 
     fn invalid_switch_plan(operations: Vec<CommandRequest>) -> SwitchPlan {
-        let snapshot = parse_connections(
-            "Interface Plug Slot Notes\n\
-             content[inference-provider] myna:backend old:provider manual\n\
-             content - new:provider -\n",
-            "name: content\nslots:\n  - old:provider:\n      content: inference-provider\n      task: speech-to-text\n  - new:provider:\n      content: inference-provider\n      task: speech-to-text\n",
-        )
-        .unwrap();
+        let snapshot = ConnectionSnapshot::new(
+            vec![
+                BackendIdentity::new("new", "provider"),
+                BackendIdentity::new("old", "provider"),
+            ],
+            ActiveBackendState::Connected(BackendIdentity::new("old", "provider")),
+        );
         SwitchPlan::with_operations_for_test(
             snapshot,
             BackendIdentity::new("new", "provider"),

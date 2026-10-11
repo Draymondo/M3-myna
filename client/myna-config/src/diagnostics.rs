@@ -40,8 +40,8 @@ const SENSITIVE_KEY_SUBSTRINGS: &[&str] = &[
     "apikey",
 ];
 
-/// One installed snap as parsed from `snap list` output.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One installed snap as `GET /v2/snaps` lists it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct InstalledSnap {
     pub name: String,
     pub version: String,
@@ -143,62 +143,6 @@ impl DiagnosticReport {
     pub fn continuation_columns(&self) -> &[usize] {
         &self.hanging
     }
-}
-
-/// Errors returned by [`parse_snap_list`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SnapListError {
-    Malformed { line_number: usize },
-}
-
-impl std::fmt::Display for SnapListError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SnapListError::Malformed { line_number } => {
-                write!(f, "malformed `snap list` row {line_number}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for SnapListError {}
-
-/// Parses `snap list` output into (name, version) pairs.
-///
-/// The empty-message form emitted by snapd (`No snaps are installed yet…`) is
-/// treated as an empty list. A well-formed table must have a header row
-/// followed by rows containing at least a name and a version; any shorter row
-/// is reported as [`SnapListError::Malformed`].
-pub fn parse_snap_list(input: &str) -> Result<Vec<InstalledSnap>, SnapListError> {
-    let mut lines = input
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty());
-    let Some((_, first)) = lines.next() else {
-        return Ok(Vec::new());
-    };
-    let trimmed = first.trim();
-    if trimmed.starts_with("No snaps are installed") || trimmed.starts_with("No snaps installed") {
-        return Ok(Vec::new());
-    }
-    if !trimmed.split_whitespace().take(2).eq(["Name", "Version"]) {
-        return Err(SnapListError::Malformed { line_number: 1 });
-    }
-    // Otherwise the first non-empty line is treated as the header and skipped.
-    let mut snaps = Vec::new();
-    for (number, line) in lines {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 2 {
-            return Err(SnapListError::Malformed {
-                line_number: number + 1,
-            });
-        }
-        snaps.push(InstalledSnap {
-            name: fields[0].to_owned(),
-            version: fields[1].to_owned(),
-        });
-    }
-    Ok(snaps)
 }
 
 /// The issue form `.github/ISSUE_TEMPLATE/report.yml` describes.
@@ -1091,18 +1035,6 @@ mod tests {
         );
         assert_eq!(field_value(&text, "Languages"), Some("de_DE, de"));
         assert!(text.find("System:").unwrap() < text.find("Machine:").unwrap());
-    }
-
-    #[test]
-    fn snap_list_parses_and_reports() {
-        let snaps = parse_snap_list(
-            "Name  Version  Rev  Tracking  Publisher  Notes\n\
-             myna  1.2.3  7  latest/stable  canonical**  -\n",
-        )
-        .unwrap();
-        assert_eq!(snaps.len(), 1);
-        assert_eq!(snaps[0].name, "myna");
-        assert_eq!(snaps[0].version, "1.2.3");
     }
 
     #[test]

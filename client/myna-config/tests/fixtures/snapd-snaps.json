@@ -1,0 +1,90 @@
+[
+  {
+    "id": "KAhS3MFXHSvvp5xo7jeU6ctvweA0Xq79",
+    "title": "myna-parakeet",
+    "summary": "Parakeet TDT speech-to-text inference snap (Myna)",
+    "install-date": "2026-10-09T00:24:06.365813574Z",
+    "name": "myna-parakeet",
+    "publisher": {
+      "id": "a6nkG6XLIhuFo36OkKZYZVJczS8lw5c0",
+      "username": "charles05",
+      "display-name": "Charles",
+      "validation": "unproven"
+    },
+    "status": "active",
+    "type": "app",
+    "base": "core24",
+    "version": "0.1.0+git183.6fd73f42",
+    "channel": "edge",
+    "tracking-channel": "latest/edge",
+    "confinement": "strict",
+    "revision": "4",
+    "mounted-from": "/var/lib/snapd/snaps/myna-parakeet_4.snap"
+  },
+  {
+    "id": "TyPg4jAv6K8clbrQNpWSsILR0I8kfmsi",
+    "title": "myna-whisper",
+    "summary": "Whisper speech-to-text inference snap for Myna",
+    "install-date": "2026-10-09T00:26:42.708686023Z",
+    "name": "myna-whisper",
+    "publisher": {
+      "id": "a6nkG6XLIhuFo36OkKZYZVJczS8lw5c0",
+      "username": "charles05",
+      "display-name": "Charles",
+      "validation": "unproven"
+    },
+    "status": "active",
+    "type": "app",
+    "base": "core24",
+    "version": "0.1.0+git183.6fd73f42",
+    "channel": "edge",
+    "tracking-channel": "latest/edge",
+    "confinement": "strict",
+    "revision": "2",
+    "mounted-from": "/var/lib/snapd/snaps/myna-whisper_2.snap"
+  },
+  {
+    "id": "4AW3BXBJoMUBcVNAD8IDv1GqY0dfkGsr",
+    "title": "myna",
+    "summary": "Speech to text desktop client for the Ubuntu Desktop",
+    "install-date": "2026-10-11T13:40:51.730813454Z",
+    "name": "myna",
+    "publisher": {
+      "id": "a6nkG6XLIhuFo36OkKZYZVJczS8lw5c0",
+      "username": "charles05",
+      "display-name": "Charles",
+      "validation": "unproven"
+    },
+    "status": "active",
+    "type": "app",
+    "base": "core24",
+    "version": "0.2.1",
+    "channel": "latest/edge",
+    "tracking-channel": "latest/edge",
+    "confinement": "strict",
+    "revision": "16",
+    "mounted-from": "/var/lib/snapd/snaps/myna_16.snap"
+  },
+  {
+    "id": "PMrrV4ml8uWuEUDBT8dSGnKUYbevVhc4",
+    "title": "snapd",
+    "summary": "Daemon and tooling that enable snap packages",
+    "install-date": "2026-10-08T23:40:15.316972426Z",
+    "name": "snapd",
+    "publisher": {
+      "id": "canonical",
+      "username": "canonical",
+      "display-name": "Canonical",
+      "validation": "verified"
+    },
+    "status": "active",
+    "type": "snapd",
+    "base": null,
+    "version": "2.77.1",
+    "channel": "stable",
+    "tracking-channel": "latest/stable",
+    "confinement": "strict",
+    "revision": "28254",
+    "mounted-from": "/var/lib/snapd/snaps/snapd_28254.snap"
+  }
+]

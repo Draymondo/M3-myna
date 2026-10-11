@@ -19,6 +19,7 @@ use libadwaita::prelude::*;
 use crate::active_backend::{ensure_backend_active, Settled, SetupError, SetupStage, SnapdWait};
 use crate::adapters::shell_extensions::GnomeShellExtensions;
 use crate::adapters::snap_backend::SnapBackendRepository;
+use crate::adapters::snapd_client::UnixSocketSnapdClient;
 use crate::adapters::system_configurator::PkexecSystemConfigurator;
 use crate::command::{CancellationToken, GioCommandRunner};
 use crate::domain::BackendSurfaceError;
@@ -38,7 +39,7 @@ use crate::snap_install::{follow_change, Follow};
 use crate::ui;
 
 /// How often the component step re-reads the machine while something is
-/// missing: one `snap list` and one discovery each time.
+/// missing: snapd's snaps and connections each time.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// How long setting up waits for snapd to finish installing Myna or a model,
 /// which may still be downloading it.
@@ -127,7 +128,10 @@ impl OnboardingUi {
         Self::present_with_ports(
             application,
             initial,
-            Rc::new(SnapBackendRepository::new(runner.clone())),
+            Rc::new(SnapBackendRepository::new(
+                runner.clone(),
+                Arc::new(UnixSocketSnapdClient::new()),
+            )),
             Rc::new(PkexecSystemConfigurator::new(runner)),
             Rc::new(GnomeShellExtensions::new()),
             Opener::FirstRun,
@@ -303,8 +307,8 @@ impl OnboardingUi {
         ui
     }
 
-    /// Re-read the machine and re-render. Costs one `snap list` and one
-    /// discovery, and runs when the window regains focus on the component
+    /// Re-read the machine and re-render. Costs snapd's snaps and
+    /// connections, and runs when the window regains focus on the component
     /// step and while that step polls.
     fn refresh_assessment(self: &Rc<Self>) {
         if self.assessing.replace(true) {

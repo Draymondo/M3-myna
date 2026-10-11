@@ -1,11 +1,13 @@
 use myna_config::domain::{
-    parse_connections, parse_engine_options, parse_model_options, parse_modelctl_config,
+    connection_snapshot, parse_engine_options, parse_model_options, parse_modelctl_config,
     parse_status, ActiveBackendState, BackendIdentity, ClientSetting, ClientSettingKey,
-    ClientSettingValue, ConfigValue, StagedChange,
+    ClientSettingValue, ConfigValue, ConnectionSnapshot, ContentConnections, StagedChange,
 };
+use serde_json::{json, Value};
 
-const CONNECTIONS: &str = include_str!("fixtures/snap-connections.txt");
-const CONTENT_INTERFACE: &str = include_str!("fixtures/snap-interface-content.txt");
+/// A `GET /v2/connections?select=all&interface=content` result from a VM,
+/// trimmed: Parakeet connected, Whisper installed, a GNOME platform slot.
+const CONNECTIONS: &str = include_str!("fixtures/snapd-connections.json");
 const MODELCTL_GET: &str = include_str!("fixtures/modelctl-get.txt");
 const STATUS: &str = include_str!("fixtures/modelctl-status.json");
 const MODELS: &str = include_str!("fixtures/modelctl-list-models.json");
@@ -33,79 +35,87 @@ fn client_settings_are_typed_and_validated() {
     assert!(ClientSettingKey::new(" ").is_err());
 }
 
+fn snapshot_of(slots: Value) -> ConnectionSnapshot {
+    let connections: ContentConnections =
+        serde_json::from_value(json!({ "slots": slots })).expect("content connections");
+    connection_snapshot(&connections)
+}
+
+/// A content slot with these attributes, connected to `myna:backend` or to
+/// nothing.
+fn slot(snap: &str, name: &str, attrs: Value, feeds_myna: bool) -> Value {
+    let connections = if feeds_myna {
+        json!([{ "snap": "myna", "plug": "backend" }])
+    } else {
+        json!([])
+    };
+    json!({
+        "snap": snap,
+        "slot": name,
+        "interface": "content",
+        "attrs": attrs,
+        "connections": connections,
+    })
+}
+
+fn provider() -> Value {
+    json!({ "content": "inference-provider", "source": { "write": ["$SNAP_COMMON/share/provider"] } })
+}
+
+fn speech_provider() -> Value {
+    json!({ "content": "inference-provider", "task": "speech-to-text" })
+}
+
 #[test]
-fn connections_express_every_honest_active_backend_state() {
-    let snapshot = parse_connections(CONNECTIONS, CONTENT_INTERFACE).unwrap();
-    assert_eq!(snapshot.backends().len(), 2);
+fn connections_read_snapd_as_it_answers() {
+    let connections: ContentConnections = serde_json::from_str(CONNECTIONS).unwrap();
+    let snapshot = connection_snapshot(&connections);
+    assert_eq!(
+        snapshot.backends(),
+        &[
+            BackendIdentity::new("myna-parakeet", "provider"),
+            BackendIdentity::new("myna-whisper", "provider"),
+        ]
+    );
     assert_eq!(
         snapshot.active_state(),
         ActiveBackendState::Connected(BackendIdentity::new("myna-parakeet", "provider"))
     );
+    assert!(snapshot.strays().is_empty());
+}
 
-    let disconnected = parse_connections(
-        include_str!("fixtures/snap-connections-empty.txt"),
-        CONTENT_INTERFACE,
-    )
-    .unwrap();
+#[test]
+fn connections_express_every_honest_active_backend_state() {
+    let disconnected = snapshot_of(json!([
+        slot("myna-parakeet", "provider", provider(), false),
+        slot("myna-whisper", "provider", provider(), false),
+    ]));
+    assert_eq!(disconnected.backends().len(), 2);
     assert_eq!(
         disconnected.active_state(),
         ActiveBackendState::Disconnected
     );
 
-    let multiple = parse_connections(
-        include_str!("fixtures/snap-connections-multiple.txt"),
-        CONTENT_INTERFACE,
-    )
-    .unwrap();
+    let multiple = snapshot_of(json!([
+        slot("myna-parakeet", "provider", provider(), true),
+        slot("myna-whisper", "provider", provider(), true),
+    ]));
     assert!(matches!(
         multiple.active_state(),
         ActiveBackendState::MultiplyConnected(backends) if backends.len() == 2
     ));
-}
 
-#[test]
-fn connections_accept_partial_rows_and_reject_an_invalid_header() {
-    let partial = parse_connections(
-        include_str!("fixtures/snap-connections-partial.txt"),
-        CONTENT_INTERFACE,
-    )
-    .unwrap();
-    assert_eq!(
-        partial.backends(),
-        &[BackendIdentity::new("myna-whisper", "provider")]
-    );
-
-    assert!(parse_connections("not snap output\n", CONTENT_INTERFACE).is_err());
-    assert!(parse_connections(CONNECTIONS, "not snap output\n").is_err());
-}
-
-#[test]
-fn connections_record_the_slot_name_of_each_provider() {
-    let snapshot = parse_connections(CONNECTIONS, CONTENT_INTERFACE).unwrap();
-    let slots: Vec<_> = snapshot
-        .backends()
-        .iter()
-        .map(BackendIdentity::slot)
-        .collect();
-    assert_eq!(slots, ["myna-parakeet:provider", "myna-whisper:provider"]);
+    assert!(snapshot_of(json!([])).backends().is_empty());
+    let nothing: ContentConnections = serde_json::from_str("{}").unwrap();
+    assert!(connection_snapshot(&nothing).backends().is_empty());
 }
 
 #[test]
 fn connections_discover_a_provider_whose_slot_is_not_named_provider() {
-    let snapshot = parse_connections(
-        "Interface Plug Slot Notes\n\
-         content - smollm2:llm -\n\
-         content[inference-provider] myna:backend community-asr:speech manual\n",
-        "name: content\n\
-         slots:\n  \
-         - community-asr:speech:\n      \
-         content: inference-provider\n      \
-         task: speech-to-text\n  \
-         - smollm2:llm (label: with colons):\n      \
-         content: inference-provider\n      \
-         task: speech-to-text\n",
-    )
-    .unwrap();
+    let snapshot = snapshot_of(json!([
+        slot("smollm2", "llm", speech_provider(), false),
+        slot("community-asr", "speech", speech_provider(), true),
+    ]));
     assert_eq!(
         snapshot.backends(),
         &[
@@ -123,26 +133,16 @@ fn connections_discover_a_provider_whose_slot_is_not_named_provider() {
 fn connections_count_only_providers_that_transcribe_speech() {
     // gemma4, an LLM inference snap, shares the same content id with no task;
     // a connection to it is no model at all.
-    let snapshot = parse_connections(
-        "Interface Plug Slot Notes\n\
-         content[inference-provider] myna:backend gemma4:provider manual\n\
-         content - community-asr:provider -\n\
-         content - other-llm:provider -\n",
-        "name: content\n\
-         slots:\n  \
-         - community-asr:provider:\n      \
-         content: inference-provider\n      \
-         task: speech-to-text\n  \
-         - gemma4:provider:\n      \
-         content: inference-provider\n      \
-         source:\n        \
-         read:\n          \
-         - $SNAP_COMMON/share/provider\n  \
-         - other-llm:provider:\n      \
-         content: inference-provider\n      \
-         task: text-generation\n",
-    )
-    .unwrap();
+    let snapshot = snapshot_of(json!([
+        slot("gemma4", "provider", provider(), true),
+        slot("community-asr", "provider", speech_provider(), false),
+        slot(
+            "other-llm",
+            "provider",
+            json!({ "content": "inference-provider", "task": "text-generation" }),
+            false,
+        ),
+    ]));
     assert_eq!(
         snapshot.backends(),
         &[BackendIdentity::new("community-asr", "provider")]
@@ -157,15 +157,7 @@ fn connections_count_only_providers_that_transcribe_speech() {
 #[test]
 fn connections_count_a_published_myna_model_without_a_task() {
     // The store rejects the `task` attribute, so published backends lack it.
-    let snapshot = parse_connections(
-        "Interface Plug Slot Notes\n\
-         content[inference-provider] myna:backend myna-funasr:provider manual\n",
-        "name: content\n\
-         slots:\n  \
-         - myna-funasr:provider:\n      \
-         content: inference-provider\n",
-    )
-    .unwrap();
+    let snapshot = snapshot_of(json!([slot("myna-funasr", "provider", provider(), true)]));
     assert_eq!(
         snapshot.active_state(),
         ActiveBackendState::Connected(BackendIdentity::new("myna-funasr", "provider"))
@@ -173,92 +165,53 @@ fn connections_count_a_published_myna_model_without_a_task() {
 }
 
 #[test]
-fn connections_ignore_a_stale_connection_labelled_with_the_plug_content_id() {
-    // snapd labels a connection with the plug's content id and keeps it across
-    // the refresh that changed the plug, so only the slot's attribute counts.
-    let snapshot = parse_connections(
-        "Interface Plug Slot Notes\n\
-         content[inference-provider] myna:backend myna-funasr:ubustt-socket manual\n\
-         content[inference-provider] myna:backend myna-parakeet:provider manual\n",
-        "name: content\n\
-         slots:\n  \
-         - myna-funasr:ubustt-socket:\n      \
-         content: ubustt-socket\n      \
-         source:\n        \
-         write:\n          \
-         - $SNAP_COMMON/run\n  \
-         - myna-parakeet:provider:\n      \
-         content: inference-provider\n",
-    )
-    .unwrap();
+fn connections_ignore_a_stale_connection_to_a_slot_with_another_content_id() {
+    // snapd keeps a connection across the refresh that changed the plug's
+    // content id, so only the slot's own attribute counts.
+    let snapshot = snapshot_of(json!([
+        slot(
+            "myna-funasr",
+            "ubustt-socket",
+            json!({ "content": "ubustt-socket", "source": { "write": ["$SNAP_COMMON/run"] } }),
+            true,
+        ),
+        slot("myna-parakeet", "provider", provider(), true),
+    ]));
     let parakeet = BackendIdentity::new("myna-parakeet", "provider");
     assert_eq!(snapshot.backends(), std::slice::from_ref(&parakeet));
     assert_eq!(
         snapshot.active_state(),
         ActiveBackendState::Connected(parakeet)
     );
+    assert_eq!(
+        snapshot.strays(),
+        &[BackendIdentity::new("myna-funasr", "ubustt-socket")]
+    );
 }
 
 #[test]
 fn connections_ignore_content_slots_with_another_content_id() {
-    let snapshot = parse_connections(
-        "Interface Plug Slot Notes\n\
-         content[other] myna:backend legacy:socket manual\n\
-         content - gnome-42-2204:gnome-42-2204 -\n\
-         content - myna-whisper:provider -\n\
-         content - gtk-common-themes:content -\n",
-        "name: content\n\
-         plugs:\n  \
-         - firefox:themes:\n      \
-         content: inference-provider\n\
-         slots:\n  \
-         - gnome-42-2204:\n      \
-         content: gnome-42-2204\n      \
-         nested:\n        \
-         content: inference-provider\n  \
-         - gtk-common-themes\n  \
-         - legacy:socket:\n      \
-         content: other\n",
-    )
-    .unwrap();
+    let snapshot = snapshot_of(json!([
+        slot("legacy", "socket", json!({ "content": "other" }), false),
+        slot(
+            "gnome-42-2204",
+            "gnome-42-2204",
+            json!({ "content": "gnome-42-2204", "nested": { "content": "inference-provider" } }),
+            false,
+        ),
+        slot("gtk-common-themes", "content", json!({}), false),
+        // Another plug of myna's on a platform slot is not the backend.
+        json!({
+            "snap": "gnome-46-2404",
+            "slot": "gnome-46-2404",
+            "interface": "content",
+            "attrs": { "content": "gnome-46-2404" },
+            "connections": [{ "snap": "myna", "plug": "gnome-46-2404" }],
+        }),
+    ]));
     assert!(snapshot.backends().is_empty());
     assert_eq!(snapshot.active_state(), ActiveBackendState::Disconnected);
-}
-
-#[test]
-fn connections_ignore_rows_with_an_empty_snap_or_slot() {
-    let snapshot = parse_connections(
-        "Interface Plug Slot Notes\n\
-         content[inference-provider] myna:backend :provider manual\n\
-         content[inference-provider] myna:backend myna-parakeet: manual\n",
-        CONTENT_INTERFACE,
-    )
-    .unwrap();
-    assert!(snapshot.backends().is_empty());
-    assert_eq!(snapshot.active_state(), ActiveBackendState::Disconnected);
-}
-
-#[test]
-fn content_interface_listing_must_name_the_content_interface() {
-    for header in ["name: other\n", "summary: content\n", "content\n", ""] {
-        assert!(
-            parse_connections(CONNECTIONS, header).is_err(),
-            "{header:?} should be rejected"
-        );
-    }
-}
-
-#[test]
-fn connections_resolve_a_slot_named_like_the_interface() {
-    let snapshot = parse_connections(
-        "Interface Plug Slot Notes\ncontent - odd:content -\n",
-        "name: content\nslots:\n  - odd:\n      content: inference-provider\n      task: speech-to-text\n",
-    )
-    .unwrap();
-    assert_eq!(
-        snapshot.backends(),
-        &[BackendIdentity::new("odd", "content")]
-    );
+    assert!(snapshot.strays().is_empty());
 }
 
 #[test]

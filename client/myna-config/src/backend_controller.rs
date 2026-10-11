@@ -571,7 +571,7 @@ fn build_page(entry: &PageEntry) -> BackendPage {
 mod tests {
     use super::*;
     use crate::domain::{
-        parse_connections, parse_engine_options, parse_model_options, parse_modelctl_config,
+        parse_engine_options, parse_model_options, parse_modelctl_config, ActiveBackendState,
         BackendSurface, ConfigValue,
     };
 
@@ -588,43 +588,44 @@ mod tests {
     }
 
     fn discovery_connected_parakeet() -> ConnectionSnapshot {
-        parse_connections(
-            "Interface Plug Slot Notes\n\
-             content[inference-provider] myna:backend myna-parakeet:provider manual\n\
-             content - myna-whisper:provider -\n",
-            "name: content\nslots:\n  - myna-parakeet:provider:\n      content: inference-provider\n  - myna-whisper:provider:\n      content: inference-provider\n",
+        ConnectionSnapshot::new(
+            vec![
+                BackendIdentity::new("myna-parakeet", "provider"),
+                BackendIdentity::new("myna-whisper", "provider"),
+            ],
+            ActiveBackendState::Connected(BackendIdentity::new("myna-parakeet", "provider")),
         )
-        .expect("connections parse")
     }
 
     fn discovery_only_parakeet() -> ConnectionSnapshot {
-        parse_connections(
-            "Interface Plug Slot Notes\n\
-             content[inference-provider] myna:backend myna-parakeet:provider manual\n",
-            "name: content\nslots:\n  - myna-parakeet:provider:\n      content: inference-provider\n",
+        ConnectionSnapshot::new(
+            vec![BackendIdentity::new("myna-parakeet", "provider")],
+            ActiveBackendState::Connected(BackendIdentity::new("myna-parakeet", "provider")),
         )
-        .expect("connections parse")
     }
 
     fn discovery_multi_connected() -> ConnectionSnapshot {
-        parse_connections(
-            "Interface Plug Slot Notes\n\
-             content[inference-provider] myna:backend myna-parakeet:provider manual\n\
-             content[inference-provider] myna:backend myna-whisper:provider manual\n",
-            "name: content\nslots:\n  - myna-parakeet:provider:\n      content: inference-provider\n  - myna-whisper:provider:\n      content: inference-provider\n",
+        ConnectionSnapshot::new(
+            vec![
+                BackendIdentity::new("myna-parakeet", "provider"),
+                BackendIdentity::new("myna-whisper", "provider"),
+            ],
+            ActiveBackendState::MultiplyConnected(vec![
+                BackendIdentity::new("myna-parakeet", "provider"),
+                BackendIdentity::new("myna-whisper", "provider"),
+            ]),
         )
-        .expect("connections parse")
     }
 
     fn discovery_three() -> ConnectionSnapshot {
-        parse_connections(
-            "Interface Plug Slot Notes\n\
-             content[inference-provider] myna:backend myna-parakeet:provider manual\n\
-             content - myna-whisper:provider -\n\
-             content - myna-funasr:provider -\n",
-            "name: content\nslots:\n  - myna-parakeet:provider:\n      content: inference-provider\n  - myna-whisper:provider:\n      content: inference-provider\n  - myna-funasr:provider:\n      content: inference-provider\n",
+        ConnectionSnapshot::new(
+            vec![
+                BackendIdentity::new("myna-funasr", "provider"),
+                BackendIdentity::new("myna-parakeet", "provider"),
+                BackendIdentity::new("myna-whisper", "provider"),
+            ],
+            ActiveBackendState::Connected(BackendIdentity::new("myna-parakeet", "provider")),
         )
-        .expect("connections parse")
     }
 
     fn snap_get_verbose_true() -> BackendSnapshot {
@@ -690,11 +691,10 @@ mod tests {
         let request = controller.begin_discovery();
         controller.complete_discovery(
             request,
-            Ok(parse_connections(
-                include_str!("../tests/fixtures/snap-connections-empty.txt"),
-                "name: content\n",
-            )
-            .unwrap()),
+            Ok(ConnectionSnapshot::new(
+                vec![],
+                ActiveBackendState::Disconnected,
+            )),
         );
 
         assert!(!controller.discovery_loading());

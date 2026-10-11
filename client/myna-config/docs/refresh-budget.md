@@ -5,10 +5,10 @@ The configuration UI is **event-driven**. A refresh cycle may spawn at most:
 | Reason                     | Process budget (upper bound)                                |
 | -------------------------- | ----------------------------------------------------------- |
 | Idle                       | `0`                                                         |
-| Startup                    | 3 = `snap list` + `snap connections` + `snap interface content` |
-| Window regains focus       | 3, as Startup, at most once per `FOCUS_REDISCOVERY_INTERVAL` (2 s) |
+| Startup                    | `0`, plus two snapd socket reads: `/v2/snaps` and `/v2/connections` |
+| Window regains focus       | as Startup, at most once per `FOCUS_REDISCOVERY_INTERVAL` (2 s) |
 | Backend selected           | `BACKEND_REFRESH_PROCESS_BUDGET` (9 = `snap info` + at most 4 prioritized app probes + 4 modelctl reads) |
-| Diagnostics requested (n backends) | 3 + n * `BACKEND_REFRESH_PROCESS_BUDGET`            |
+| Diagnostics requested (n backends) | n * `BACKEND_REFRESH_PROCESS_BUDGET`, plus the Startup reads |
 | Apply running              | `0`, plus one snapd socket read per `APPLY_PROGRESS_INTERVAL` (1 s) |
 
 Startup additionally pays one startup-sized assessment before any window
@@ -28,7 +28,7 @@ done, then starts a discovery of its own; opening the dialog reads snapd's
 changes once, to follow an install already running. It is refused while a switch or apply holds the
 operation gate (that operation rediscovers when it completes), while any
 discovery runs, and within `FOCUS_REDISCOVERY_INTERVAL` of any discovery
-starting, so a window flapping in and out of focus spawns at most 3 processes
+starting, so a window flapping in and out of focus reads snapd at most twice
 per interval. Any other discovery supersedes it. It shows no loading state,
 redraws only what changed (an open Install more models dialog included), and
 skips the clock probe and the Diagnostics snapshots below; the controller
