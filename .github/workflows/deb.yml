@@ -71,6 +71,14 @@ jobs:
           SERIES=${{ matrix.series }} make build-deb \
             SBUILD_ARGS="--chroot-mode=unshare --no-clean-source"
 
+      # sbuild prints only "dpkg-buildpackage died"; the why is in its log.
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbuild-log-${{ matrix.series }}
+          retention-days: 14
+          path: target/deb/${{ matrix.series }}/**/*.build
+
       - uses: actions/upload-artifact@v7
         with:
           name: myna-config-${{ matrix.series }}
