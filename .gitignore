@@ -80,3 +80,7 @@ server/mutants/
 *-snap/licenses/
 # The version staged into each snap by dev/stage-version.sh
 *-snap/version/
+
+# CI only: tells the pins SDK to fetch through the runner apt cache
+# (.github/actions/apt-cache).
+.workshop/pins/apt-proxy

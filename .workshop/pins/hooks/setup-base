@@ -5,13 +5,35 @@
 set -euo pipefail
 APT_SNAPSHOT=20261005T000000Z
 
+# CI drops an apt-proxy file here to fetch through the runner's apt-cacher-ng
+# (.github/actions/apt-cache), which caches only plain http. The snapshot
+# redirects http to https, so without the proxy apt still reaches it, and the
+# signed index vouches for every file either way.
+scheme=https
+if [ -f "$SDK/apt-proxy" ]; then
+    scheme=http
+    gateway=$(ip -4 route show default | awk '{print $3; exit}')
+    cat > /usr/local/lib/apt-proxy-detect <<DETECT
+#!/bin/bash
+# The CI apt cache when it answers, else straight to the archive.
+if timeout 1 bash -c '>/dev/tcp/$gateway/3142' 2>/dev/null; then
+    echo http://$gateway:3142
+else
+    echo DIRECT
+fi
+DETECT
+    chmod +x /usr/local/lib/apt-proxy-detect
+    echo 'Acquire::http::Proxy-Auto-Detect "/usr/local/lib/apt-proxy-detect";' \
+        > /etc/apt/apt.conf.d/01proxy
+fi
+
 # snapshot.ubuntu.com answers the odd 500, which failed a whole launch.
 echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/01retries
 
 . /etc/os-release
 cat > /etc/apt/sources.list.d/ubuntu.sources <<SOURCES
 Types: deb
-URIs: https://snapshot.ubuntu.com/ubuntu/$APT_SNAPSHOT
+URIs: $scheme://snapshot.ubuntu.com/ubuntu/$APT_SNAPSHOT
 Suites: $VERSION_CODENAME $VERSION_CODENAME-updates $VERSION_CODENAME-security
 Components: main universe restricted multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg

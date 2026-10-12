@@ -40,6 +40,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/apt-cache
+        with:
+          workshop: ${{ matrix.workshop }}
       # TODO(security): pin to a commit SHA - @v1 tracks the latest v1.*.
       - uses: canonical/launch-workshop@v1
         with:
@@ -110,6 +113,9 @@ jobs:
           path: corpus/english
           key: corpus-english-${{ hashFiles('server/src/myna/benchmarker/corpus_english.py', 'server/src/myna/benchmarker/_audio.py', 'dev/generate_fixtures.py') }}
 
+      - uses: ./.github/actions/apt-cache
+        with:
+          workshop: myna
       - uses: canonical/launch-workshop@v1
         with:
           workshop: myna

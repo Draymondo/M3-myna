@@ -25,3 +25,7 @@ Every input to a workshop is named by version and checked by sha256, or frozen b
 ## What cannot be pinned
 
 The base image. Workshop takes `ubuntu@26.04` and LXD refreshes the image under it. The snapshot pin brings the image's packages to the snapshot (including downgrades), so the result does not depend on the image. But a new image fingerprint still changes every layer hash, so the stack rebuilds anyway, with identical contents.
+
+## The CI apt cache
+
+A CI runner shares no layers, so every workshop launch fetches the whole apt set from snapshot.ubuntu.com, which is slow and uneven (4 to 28 minutes for the same launch) and answers the odd 500. `.github/actions/apt-cache` runs apt-cacher-ng on the runner with its cache in the Actions cache, and writes `.workshop/pins/apt-proxy`; finding that file, the pins hook switches the sources to plain http, which the proxy can cache, and routes apt through it while it answers. Without the file the sources stay https and nothing changes locally. The proxy needs the `Remap-snapshot` line in its config: an apt-cacher-ng without it fetches the http URL, follows the redirect itself and serves by-hash indexes that fail their hash check.

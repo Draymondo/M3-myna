@@ -130,6 +130,9 @@ jobs:
           path: myna-snap
       # Before the workshop, which runs on the same LXD.
       - uses: canonical/setup-lxd@v1
+      - uses: ./.github/actions/apt-cache
+        with:
+          workshop: myna-noble
       # TODO(security): pin to a commit SHA - @v1 tracks the latest v1.*.
       - uses: canonical/launch-workshop@v1
         with:

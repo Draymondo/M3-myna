@@ -1,0 +1,51 @@
+# A caching apt proxy on the runner for a workshop launch to fetch through.
+# snapshot.ubuntu.com is slow and uneven (a launch took 4 to 28 minutes on the
+# same inputs) and every launch on a fresh runner fetches the whole apt set.
+# Here apt-cacher-ng serves it from the Actions cache instead, and fetches only
+# what that misses. The pins SDK's setup-base routes apt through it when it
+# finds .workshop/pins/apt-proxy, which this action writes.
+#
+# The snapshot is immutable, so cached files never go stale; apt checks each
+# against the snapshot's signed index all the same.
+name: apt cache
+description: Run apt-cacher-ng for the workshop launch, its cache kept across runs.
+inputs:
+  workshop:
+    description: The workshop about to launch; each keeps its own cache.
+    required: true
+runs:
+  using: composite
+  steps:
+    # Keyed on the snapshot and on every SDK, so a new snapshot starts empty
+    # rather than carrying the old one's files, and an SDK edit within the week
+    # starts from what the snapshot already holds.
+    - uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/apt-cache
+        key: apt-${{ inputs.workshop }}-${{ hashFiles('.workshop/pins/**') }}-${{ hashFiles('.workshop/**') }}
+        restore-keys: apt-${{ inputs.workshop }}-${{ hashFiles('.workshop/pins/**') }}-
+
+    - shell: bash
+      env:
+        CACHE: ${{ runner.temp }}/apt-cache
+      run: |
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends apt-cacher-ng
+        sudo systemctl stop apt-cacher-ng
+        mkdir -p "$CACHE" "$RUNNER_TEMP/apt-cacher-ng/log"
+        conf="$RUNNER_TEMP/apt-cacher-ng/conf"
+        mkdir -p "$conf"
+        cat > "$conf/acng.conf" <<EOF
+        CacheDir: $CACHE
+        LogDir: $RUNNER_TEMP/apt-cacher-ng/log
+        Port: 3142
+        BindAddress: 0.0.0.0
+        Remap-snapshot: http://snapshot.ubuntu.com/ubuntu ; https://snapshot.ubuntu.com/ubuntu
+        EOF
+        /usr/sbin/apt-cacher-ng -c "$conf" ForeGround=1 > "$RUNNER_TEMP/apt-cacher-ng/run.log" 2>&1 &
+        for _ in $(seq 50); do
+          if (: > /dev/tcp/127.0.0.1/3142) 2>/dev/null; then break; fi
+          sleep 0.1
+        done
+        (: > /dev/tcp/127.0.0.1/3142) || { cat "$RUNNER_TEMP/apt-cacher-ng/run.log"; exit 1; }
+        touch .workshop/pins/apt-proxy
+        du -sh "$CACHE"
