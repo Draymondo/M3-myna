@@ -445,6 +445,16 @@ def test_reselection_keeps_the_gpu_engine_off_a_driver_it_cannot_use(
 
 
 @pytest.mark.parametrize("snap_dir", MULTI_ENGINE_SNAPS)
+@pytest.mark.parametrize("hook", ["install", RESELECT_HOOK])
+def test_the_hooks_that_probe_the_driver_may_listen(snap_dir: str, hook: str) -> None:
+    """cuInit listen()s on a socket, and snapd's seccomp allows listen() only
+    with network-bind. Without it the probe failed with CUDA error 304 on a
+    working RTX 4080, and 0.2.3 put fresh installs there on the cpu engine."""
+    plugs = set(((_recipe(snap_dir).get("hooks") or {}).get(hook) or {}).get("plugs") or [])
+    assert {"opengl", "network-bind"} <= plugs, f"{INFERENCE_SNAPS[snap_dir]}: {hook} plugs {plugs}"
+
+
+@pytest.mark.parametrize("snap_dir", MULTI_ENGINE_SNAPS)
 def test_the_probe_guards_the_only_gpu_engine(snap_dir: str) -> None:
     """The probe answers for NVIDIA alone: a snap gaining another accelerator
     engine must not have it skipped because NVIDIA is unusable."""

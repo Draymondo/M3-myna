@@ -59,6 +59,10 @@ hooks:
     plugs: &hook-plugs
       - hardware-observe
       - opengl
+      # The driver check before engine selection (myna.server.cuda_probe):
+      # cuInit listen()s on a socket, which seccomp allows only with this
+      # plug, and fails with CUDA error 304 without it.
+      - network-bind
   post-refresh:
     plugs: *hook-plugs
   connect-plug-hardware-observe:
