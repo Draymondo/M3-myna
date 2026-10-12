@@ -38,6 +38,8 @@ Toggle activation has no release edge, so the controller also ends a session by 
 
 On completion the controller classifies the input from the same tap (`input_quality`): a noise floor above -50 dBFS, or speech under 15 dB above it, raises the recoverable "Background noise is high" notice on every such session. An empty transcript keeps its own message. Thresholds are prototype calibration from the HUD meter's headset baseline; the remedy stays in the PipeWire graph.
 
+A backend can serve worse than it should and say so: a progress `warning`, with a `warning_code` naming it (a GPU engine serving on the CPU because its driver did not load, or a model thrashing for memory). The orchestrator headlines it in the user's language from the code, or takes the server's text for a code it does not know, and emits `Warning`. The controller holds the utterance's first one and shows it as the completion notice, after "Focus lost" and "No speech detected" and ahead of the noise notice, since the condition outlasts the utterance. Once shown, that code is not shown again until the daemon restarts; a warning an empty utterance could not show waits for the next.
+
 Committed segments may be coalesced before IBus insertion because rapid adjacent commits are not reliable across all targets. Natural whitespace from the backend is preserved; compatibility spacing is added only when neither boundary supplies whitespace.
 
 In streaming mode, unstable hypotheses may replace the target's preedit region when the injector supports it. Preedit is volatile, clears before commits and on cancellation, and follows the same secure-field and focus-loss guards as committed text.

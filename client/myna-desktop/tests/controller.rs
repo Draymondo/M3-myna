@@ -2008,3 +2008,97 @@ async fn a_model_connected_after_login_is_a_notice_not_an_error() {
     assert!(last_errors.lock().unwrap().is_empty(), "nothing failed");
     assert_eq!(controller.state(), DictationState::Idle);
 }
+
+// ── Backend warnings ─────────────────────────────────────────────────────────
+
+/// One scripted session per utterance, in order.
+fn scripted_sessions(
+    scripts: Vec<(Vec<OrchestratorEvent>, SessionOutcome)>,
+) -> impl FnMut(mpsc::Sender<OrchestratorEvent>) -> (SessionRun, StopHandle) + Send {
+    let mut scripts = scripts.into_iter();
+    move |tx: mpsc::Sender<OrchestratorEvent>| {
+        let (events, outcome) = scripts.next().expect("one script per utterance");
+        let run: SessionRun = Box::pin(async move {
+            for e in events {
+                let _ = tx.send(e).await;
+            }
+            Ok(outcome)
+        });
+        (run, StopHandle::default())
+    }
+}
+
+fn gpu_warning() -> OrchestratorEvent {
+    OrchestratorEvent::Warning {
+        code: Some(myna_core::WARNING_GPU_UNAVAILABLE.into()),
+        notice: Failure::new(
+            "Using the CPU: GPU unavailable",
+            "The NVIDIA GPU could not be used",
+        ),
+    }
+}
+
+fn warned_utterance(text: &str) -> (Vec<OrchestratorEvent>, SessionOutcome) {
+    let mut events = vec![OrchestratorEvent::Ready, gpu_warning()];
+    if !text.is_empty() {
+        events.push(OrchestratorEvent::Final(text.into()));
+    }
+    events.push(OrchestratorEvent::Done(text.into()));
+    (
+        events,
+        SessionOutcome::Completed {
+            transcript: text.into(),
+        },
+    )
+}
+
+async fn run_utterances(
+    scripts: Vec<(Vec<OrchestratorEvent>, SessionOutcome)>,
+) -> Vec<IndicatorState> {
+    let edges = (0..scripts.len()).flat_map(|_| [TriggerEdge::Press, TriggerEdge::Release]);
+    let indicator = MockIndicator::new();
+    let log = indicator.log();
+    let mut controller = build(
+        edges,
+        MockInjector::new(),
+        indicator,
+        scripted_sessions(scripts),
+    );
+    controller.run().await;
+    let states = log.lock().unwrap().clone();
+    states
+}
+
+#[tokio::test]
+async fn a_backend_warning_is_shown_once_when_its_utterance_completes() {
+    let states = run_utterances(vec![warned_utterance("one"), warned_utterance("two")]).await;
+
+    // Done and the completed outcome both publish the completion (C11); the
+    // indicator dedups the repeat, so count shows, not publishes.
+    let mut shown = states.clone();
+    shown.dedup();
+    let notice = IndicatorState::recoverable("Using the CPU: GPU unavailable");
+    assert_eq!(
+        shown.iter().filter(|s| **s == notice).count(),
+        1,
+        "{states:?}"
+    );
+    assert_eq!(states.last(), Some(&IndicatorState::Hidden), "{states:?}");
+}
+
+#[tokio::test]
+async fn a_warning_an_empty_utterance_could_not_show_waits_for_the_next() {
+    let states = run_utterances(vec![warned_utterance(""), warned_utterance("two")]).await;
+
+    assert!(
+        states.contains(&IndicatorState::recoverable("No speech detected")),
+        "{states:?}"
+    );
+    assert_eq!(
+        states.last(),
+        Some(&IndicatorState::recoverable(
+            "Using the CPU: GPU unavailable"
+        )),
+        "{states:?}"
+    );
+}

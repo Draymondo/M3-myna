@@ -14,6 +14,7 @@
 //! Text input is reached only through `myna_platform::text_input` and the
 //! capabilities a backend reports.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use futures_util::stream::{BoxStream, StreamExt};
@@ -149,6 +150,7 @@ pub fn event_to_indicator(
     delivery: Delivery,
     quality: InputQuality,
     capture_fault: Option<&str>,
+    warning: Option<&str>,
 ) -> Option<IndicatorState> {
     let still_listening = matches!(
         state,
@@ -164,7 +166,7 @@ pub fn event_to_indicator(
         }
         OrchestratorEvent::Done(text) => Some(match capture_fault {
             Some(message) => IndicatorState::critical(message.to_string()),
-            None => completion_indicator_state(text, delivery, quality),
+            None => completion_indicator_state(text, delivery, quality, warning),
         }),
         OrchestratorEvent::Error { failure, .. } => {
             Some(IndicatorState::critical(failure.headline.clone()))
@@ -209,22 +211,30 @@ pub fn event_to_indicator(
 /// notice, so the user learns why the transcript is worse than it should be.
 /// An empty transcript keeps its own, more actionable, message.
 ///
+/// `warning` is the headline of a backend warning not yet shown this run (see
+/// [`OrchestratorEvent::Warning`]): the backend served, but worse than it
+/// should, and that outlasts this utterance, so it outranks the noise notice.
+///
 /// This is an interim, client-inferred classification, not a true wire-level
 /// error disposition — that remains T31/T62's job (spec Assumptions).
 pub fn completion_indicator_state(
     transcript: &str,
     delivery: Delivery,
     quality: InputQuality,
+    warning: Option<&str>,
 ) -> IndicatorState {
     match (delivery, transcript.trim().is_empty()) {
         (Delivery::Dropped, _) | (Delivery::FocusLost, true) => {
             IndicatorState::recoverable(gettext("Focus lost"))
         }
         (_, true) => IndicatorState::recoverable(gettext("No speech detected")),
-        _ if quality == InputQuality::Noisy => {
-            IndicatorState::recoverable(gettext("Background noise is high"))
-        }
-        _ => IndicatorState::Hidden,
+        _ => match warning {
+            Some(headline) => IndicatorState::recoverable(headline),
+            None if quality == InputQuality::Noisy => {
+                IndicatorState::recoverable(gettext("Background noise is high"))
+            }
+            None => IndicatorState::Hidden,
+        },
     }
 }
 
@@ -452,6 +462,9 @@ pub struct DesktopController {
     /// Policy-driven session end (see [`AutoStop`]). Live for the same
     /// reason: the silence timeout is a user setting.
     auto_stop: Live<AutoStop>,
+    /// The backend warnings already shown, by code: each condition outlasts
+    /// the utterance that reported it, so one notice per run says it.
+    warned: BTreeSet<String>,
 }
 
 /// This session's accept-gate drop count, published as it changes.
@@ -530,6 +543,7 @@ impl DesktopControllerBuilder {
             state: DictationState::Idle,
             preedit: self.preedit,
             auto_stop: self.auto_stop,
+            warned: BTreeSet::new(),
         }
     }
 }
@@ -613,6 +627,7 @@ impl DesktopController {
         // at the next press.
         let preedit = self.preedit.clone();
         let auto_stop = self.auto_stop.clone();
+        let warned = &self.warned;
 
         tokio::pin!(run);
         let mut trigger_open = true;
@@ -739,6 +754,7 @@ impl DesktopController {
                                 ending,
                                 preedit: preedit.get() && supports_preedit,
                                 quality: quality_of(&stats),
+                                warned,
                             },
                             &mut utterance,
                         )
@@ -788,13 +804,19 @@ impl DesktopController {
                     // or a "No speech detected" vs. "Focus lost"
                     // disagreement, can never happen; a redundant repeat here
                     // is a no-op under DbusIndicator::publish's dedup (C2).
-                    self.indicator
-                        .set_state(completion_indicator_state(
-                            &transcript,
-                            ending.delivery(utterance.buffer.dropped()),
-                            quality_of(&stats),
-                        ))
-                        .await;
+                    let warning = utterance.warning.as_ref();
+                    let completion = completion_indicator_state(
+                        &transcript,
+                        ending.delivery(utterance.buffer.dropped()),
+                        quality_of(&stats),
+                        warning.map(|w| w.headline.as_str()),
+                    );
+                    if let Some(warning) = warning {
+                        if completion == IndicatorState::recoverable(warning.headline.as_str()) {
+                            self.warned.insert(warning.key.clone());
+                        }
+                    }
+                    self.indicator.set_state(completion).await;
                     finalize_state(&mut self.state, DictationState::Completed);
                 }
                 Ok(SessionOutcome::Aborted) => {
@@ -980,18 +1002,20 @@ async fn route_event(
     target: &mut dyn Target,
     indicator: &mut dyn Indicator,
     state: &mut DictationState,
-    flags: RouteFlags,
+    flags: RouteFlags<'_>,
     utterance: &mut Utterance,
 ) -> Ending {
     let Utterance {
         buffer,
         drops,
         fault,
+        warning,
     } = utterance;
     let RouteFlags {
         mut ending,
         preedit,
         quality,
+        warned,
     } = flags;
     // A non-Final event is a boundary: flush the buffered final burst as one
     // commit before handling it (so ordering with `done`/indicator holds).
@@ -1021,12 +1045,23 @@ async fn route_event(
         }
         enter_finalizing(state, indicator).await;
     }
+    if let OrchestratorEvent::Warning { code, notice } = &event {
+        myna_core::info_log!("ctrl", "backend warning: {}", notice.detail);
+        let key = code.clone().unwrap_or_else(|| notice.headline.clone());
+        if warning.is_none() && !warned.contains(&key) {
+            *warning = Some(PendingWarning {
+                key,
+                headline: notice.headline.clone(),
+            });
+        }
+    }
     if let Some(indicator_state) = event_to_indicator(
         &event,
         *state,
         ending.delivery(buffer.dropped()),
         quality,
         fault.as_deref(),
+        warning.as_ref().map(|w| w.headline.as_str()),
     ) {
         indicator.set_state(indicator_state).await;
     }
@@ -1065,7 +1100,7 @@ async fn route_event(
 /// The per-event routing decisions [`route_event`] needs, grouped so the
 /// signature stays readable.
 #[derive(Clone, Copy)]
-struct RouteFlags {
+struct RouteFlags<'a> {
     /// Why this utterance stopped writing, if it has: output is refused and
     /// an empty transcript is reported differently (see [`Ending`]).
     ending: Ending,
@@ -1073,6 +1108,8 @@ struct RouteFlags {
     preedit: bool,
     /// The capture's verdict on the input so far, for the `Done` notice.
     quality: InputQuality,
+    /// The backend warnings this run has already shown (by key).
+    warned: &'a BTreeSet<String>,
 }
 
 /// What one utterance accumulates as its events arrive, and what the terminal
@@ -1090,6 +1127,16 @@ struct Utterance {
     /// badly, the transcript that follows covers only the audio taken before
     /// it, and the terminal reports the failure once that text is in.
     fault: Option<String>,
+    /// The first backend warning this utterance reported that the run has not
+    /// shown yet, for its completion notice.
+    warning: Option<PendingWarning>,
+}
+
+/// A backend warning waiting for a completion to show it.
+struct PendingWarning {
+    /// Its wire code, or its headline when it came without one.
+    key: String,
+    headline: String,
 }
 
 /// Committed text buffered for coalesced insertion, for one utterance.
@@ -1311,6 +1358,7 @@ mod tests {
                 DictationState::Recording,
                 Delivery::Landed,
                 InputQuality::Ok,
+                None,
                 None
             ),
             Some(IndicatorState::Recording)
@@ -1321,6 +1369,7 @@ mod tests {
                 DictationState::Recording,
                 Delivery::Landed,
                 InputQuality::Ok,
+                None,
                 None
             ),
             Some(IndicatorState::Recording)
@@ -1341,6 +1390,7 @@ mod tests {
                 DictationState::Recording,
                 Delivery::Landed,
                 InputQuality::Ok,
+                None,
                 None
             ),
             Some(IndicatorState::Recording)
@@ -1351,6 +1401,7 @@ mod tests {
                 DictationState::Transcribing,
                 Delivery::Landed,
                 InputQuality::Ok,
+                None,
                 None
             ),
             Some(IndicatorState::Recording),
@@ -1379,12 +1430,30 @@ mod tests {
                     DictationState::Finalizing,
                     Delivery::Landed,
                     InputQuality::Ok,
+                    None,
                     None
                 ),
                 None,
                 "{event:?} arriving once Finalizing must not touch the indicator"
             );
         }
+    }
+
+    #[test]
+    fn a_pending_warning_outranks_noise_but_not_an_empty_transcript() {
+        let gpu = Some("Using the CPU: GPU unavailable");
+        assert_eq!(
+            completion_indicator_state("hello", Delivery::Landed, InputQuality::Noisy, gpu),
+            IndicatorState::recoverable("Using the CPU: GPU unavailable")
+        );
+        assert_eq!(
+            completion_indicator_state("", Delivery::Landed, InputQuality::Ok, gpu),
+            IndicatorState::recoverable("No speech detected")
+        );
+        assert_eq!(
+            completion_indicator_state("hello", Delivery::Dropped, InputQuality::Ok, gpu),
+            IndicatorState::recoverable("Focus lost")
+        );
     }
 
     #[test]
@@ -1395,17 +1464,18 @@ mod tests {
                 DictationState::Finalizing,
                 Delivery::Landed,
                 InputQuality::Noisy,
+                None,
                 None
             ),
             Some(IndicatorState::recoverable("Background noise is high"))
         );
         // An empty transcript keeps its own, more actionable, message.
         assert_eq!(
-            completion_indicator_state("", Delivery::Landed, InputQuality::Noisy),
+            completion_indicator_state("", Delivery::Landed, InputQuality::Noisy, None),
             IndicatorState::recoverable("No speech detected")
         );
         assert_eq!(
-            completion_indicator_state("", Delivery::FocusLost, InputQuality::Noisy),
+            completion_indicator_state("", Delivery::FocusLost, InputQuality::Noisy, None),
             IndicatorState::recoverable("Focus lost")
         );
     }
@@ -1499,6 +1569,7 @@ mod tests {
                 DictationState::Finalizing,
                 Delivery::Landed,
                 InputQuality::Ok,
+                None,
                 None
             ),
             Some(IndicatorState::Hidden)
@@ -1517,6 +1588,7 @@ mod tests {
                 DictationState::Finalizing,
                 Delivery::Landed,
                 InputQuality::Ok,
+                None,
                 None
             ),
             Some(IndicatorState::recoverable("No speech detected"))
@@ -1527,6 +1599,7 @@ mod tests {
                 DictationState::Finalizing,
                 Delivery::Landed,
                 InputQuality::Ok,
+                None,
                 None
             ),
             Some(IndicatorState::recoverable("No speech detected")),
@@ -1546,6 +1619,7 @@ mod tests {
                 DictationState::Finalizing,
                 Delivery::FocusLost,
                 InputQuality::Ok,
+                None,
                 None
             ),
             Some(IndicatorState::recoverable("Focus lost"))
@@ -1563,6 +1637,7 @@ mod tests {
                 DictationState::Finalizing,
                 Delivery::FocusLost,
                 InputQuality::Ok,
+                None,
                 None
             ),
             Some(IndicatorState::Hidden)
@@ -1574,15 +1649,15 @@ mod tests {
     #[test]
     fn completion_indicator_state_splits_on_empty_transcript() {
         assert_eq!(
-            completion_indicator_state("", Delivery::Landed, InputQuality::Ok),
+            completion_indicator_state("", Delivery::Landed, InputQuality::Ok, None),
             IndicatorState::recoverable("No speech detected")
         );
         assert_eq!(
-            completion_indicator_state("   ", Delivery::Landed, InputQuality::Ok),
+            completion_indicator_state("   ", Delivery::Landed, InputQuality::Ok, None),
             IndicatorState::recoverable("No speech detected")
         );
         assert_eq!(
-            completion_indicator_state("hello", Delivery::Landed, InputQuality::Ok),
+            completion_indicator_state("hello", Delivery::Landed, InputQuality::Ok, None),
             IndicatorState::Hidden
         );
     }
@@ -1592,16 +1667,16 @@ mod tests {
     #[test]
     fn completion_indicator_state_focus_lost_overrides_empty_transcript_message() {
         assert_eq!(
-            completion_indicator_state("", Delivery::FocusLost, InputQuality::Ok),
+            completion_indicator_state("", Delivery::FocusLost, InputQuality::Ok, None),
             IndicatorState::recoverable("Focus lost")
         );
         assert_eq!(
-            completion_indicator_state("   ", Delivery::FocusLost, InputQuality::Ok),
+            completion_indicator_state("   ", Delivery::FocusLost, InputQuality::Ok, None),
             IndicatorState::recoverable("Focus lost"),
             "whitespace-only transcript still counts as empty"
         );
         assert_eq!(
-            completion_indicator_state("hello", Delivery::FocusLost, InputQuality::Ok),
+            completion_indicator_state("hello", Delivery::FocusLost, InputQuality::Ok, None),
             IndicatorState::Hidden,
             "captured text hides the indicator even if focus was later lost"
         );
@@ -1618,6 +1693,7 @@ mod tests {
                 DictationState::Recording,
                 Delivery::Landed,
                 InputQuality::Ok,
+                None,
                 None
             ),
             Some(IndicatorState::critical("Model error"))
@@ -1634,6 +1710,7 @@ mod tests {
                 DictationState::Recording,
                 Delivery::Landed,
                 InputQuality::Ok,
+                None,
                 None
             ),
             None
@@ -1644,6 +1721,7 @@ mod tests {
                 DictationState::Recording,
                 Delivery::Landed,
                 InputQuality::Ok,
+                None,
                 None
             ),
             None
@@ -1654,6 +1732,7 @@ mod tests {
                 DictationState::Recording,
                 Delivery::Landed,
                 InputQuality::Ok,
+                None,
                 None
             ),
             None
@@ -1713,11 +1792,11 @@ mod tests {
     #[test]
     fn dropped_text_is_reported_however_much_was_transcribed() {
         assert_eq!(
-            completion_indicator_state("hello", Delivery::Dropped, InputQuality::Ok),
+            completion_indicator_state("hello", Delivery::Dropped, InputQuality::Ok, None),
             IndicatorState::recoverable("Focus lost")
         );
         assert_eq!(
-            completion_indicator_state("hello", Delivery::Dropped, InputQuality::Noisy),
+            completion_indicator_state("hello", Delivery::Dropped, InputQuality::Noisy, None),
             IndicatorState::recoverable("Focus lost"),
             "what never landed outranks the noise notice"
         );
@@ -1727,6 +1806,7 @@ mod tests {
                 DictationState::Finalizing,
                 Delivery::Dropped,
                 InputQuality::Ok,
+                None,
                 None
             ),
             Some(IndicatorState::recoverable("Focus lost")),
