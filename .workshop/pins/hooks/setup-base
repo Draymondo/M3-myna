@@ -5,6 +5,9 @@
 set -euo pipefail
 APT_SNAPSHOT=20261005T000000Z
 
+# snapshot.ubuntu.com answers the odd 500, which failed a whole launch.
+echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/01retries
+
 . /etc/os-release
 cat > /etc/apt/sources.list.d/ubuntu.sources <<SOURCES
 Types: deb
