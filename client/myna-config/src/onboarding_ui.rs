@@ -126,6 +126,7 @@ pub struct OnboardingUi {
     poll: RefCell<Option<glib::SourceId>>,
     beat_length: Cell<Duration>,
     beat: RefCell<Option<glib::SourceId>>,
+    daemon_start_timeout: Cell<Duration>,
 }
 
 impl OnboardingUi {
@@ -234,6 +235,7 @@ impl OnboardingUi {
             poll: RefCell::new(None),
             beat_length: Cell::new(BEAT),
             beat: RefCell::new(None),
+            daemon_start_timeout: Cell::new(DAEMON_START_TIMEOUT),
         });
 
         ui.shortcut.connect_changed(Box::new({
@@ -780,6 +782,11 @@ impl OnboardingUi {
         self.beat_length.set(beat);
     }
 
+    /// A probe whose stand-in daemon never restarts need not wait for it.
+    pub fn set_daemon_start_timeout(&self, timeout: Duration) {
+        self.daemon_start_timeout.set(timeout);
+    }
+
     /// The widgets the headless probe drives the wizard through. It holds
     /// these and drops the controller, the way the application does.
     pub fn window(&self) -> ui::OnboardingWindow {
@@ -1025,7 +1032,7 @@ async fn wait_for_daemon(ui: &std::rc::Weak<OnboardingUi>, previous: Option<Stri
             Some(Some(owner)) if Some(&owner) != previous.as_ref() => return,
             Some(_) => {}
         }
-        if waited >= DAEMON_START_TIMEOUT {
+        if waited >= strong.daemon_start_timeout.get() {
             strong.log("setup: the daemon did not claim its name in time");
             return;
         }

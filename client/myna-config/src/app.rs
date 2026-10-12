@@ -1841,6 +1841,7 @@ fn onboarding_control_probe() -> glib::ExitCode {
                 probe_languages,
                 crate::onboarding_ui::Opener::FirstRun,
             );
+            ui.set_daemon_start_timeout(Duration::ZERO);
             (ui.window(), ui.shortcut_button(), ui.shortcut())
         };
         settle_gtk();
