@@ -89,9 +89,9 @@ jobs:
         run: make test-extension-next
 
   # Coverage (feature 006, FR-007): both languages measured in the Workshop
-  # environment, reports published as artifacts, and the self-hosted patch
-  # gate (FR-008) enforced on the PR's changed lines. Project-level coverage
-  # is informational (FR-009) until a project threshold is ratified.
+  # environment and the self-hosted patch gate (FR-008) enforced on the PR's
+  # changed lines. Project-level coverage is informational (FR-009), read
+  # locally through `make coverage`.
   coverage:
     runs-on: ubuntu-latest
     steps:
@@ -126,36 +126,19 @@ jobs:
       - if: always()
         run: workshop tasks || true
 
-      # The `myna` workshop's half of `make test` runs here instrumented:
-      # corpus, cov-client, cov-server, cov-extension, exercise, deadcode,
-      # then the blocking patch gate (FR-008: 80% of changed coverable lines,
-      # 5-line floor, deletion-only and excluded paths cannot false-fail; exit
-      # 2 = fail) against the PR's base. The reports below are published even
-      # when the gate fails, which is when they are most wanted.
-      - name: Coverage, dead-code report, patch gate
-        run: make coverage COV_BASE="origin/${{ github.base_ref || 'main' }}"
+      # The `myna` workshop's half of `make test` runs here instrumented, then
+      # the blocking patch gate (FR-008: 80% of changed coverable lines, 5-line
+      # floor, deletion-only and excluded paths cannot false-fail; exit 2 =
+      # fail) against the PR's base. The project-level reports are left to
+      # `make coverage` locally; nobody read them here.
+      - name: Patch coverage gate
+        run: make coverage-gate COV_BASE="origin/${{ github.base_ref || 'main' }}"
 
-      # The digests (populations, per-component debt, hot spots, never-entered
-      # functions, static findings; the GJS summary) go to the job summary, so
-      # the numbers are read on every run rather than only when someone
-      # downloads the artifact.
-      - name: Coverage summaries
-        if: always()
-        run: |
-          for f in client/target/coverage/populations-summary.md \
-                   extensions/myna-shell/target/coverage/gjs-summary.md; do
-            [ -f "$f" ] && cat "$f" >> "$GITHUB_STEP_SUMMARY"
-          done
-          true
-
-      - name: Upload coverage reports
+      # Which changed lines missed, wanted most when the gate fails.
+      - name: Upload the patch coverage report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-reports
+          name: patch-coverage
           retention-days: 14
-          path: |
-            client/target/coverage/
-            server/htmlcov/
-            server/coverage-*.xml
-            extensions/myna-shell/target/coverage/
+          path: client/target/coverage/patch-coverage.html

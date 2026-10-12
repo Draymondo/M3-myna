@@ -12,7 +12,7 @@ The repository also contains model evaluation, benchmarking, packaging, and desk
 
 # Important
 
-- A change is done when `make check` and `make test-<component>` are green for every component touched, and `make coverage` passes its patch gate when logic was added or moved. `make preflight` is the merge bar. The rules, the red/green test discipline and when to reach for mutation testing are in `.kb/verification.md`.
+- A change is done when `make check` and `make test-<component>` are green for every component touched, and `make coverage-gate` passes its patch gate when logic was added or moved. `make preflight` is the merge bar. The rules, the red/green test discipline and when to reach for mutation testing are in `.kb/verification.md`.
 - Everything built from the tree carries one version, `dev/version.sh`'s, derived from the last `vX.Y.Z` tag: the snaps, the deb, the client binaries and the extension tarball. Releasing is tagging; the Cargo and pyproject `0.0.0` versions are placeholders, never bumped. Never hardcode a version in packaging. See `.kb/versioning.md`, and `.kb/releasing.md` for cutting a release.
 
 # Architecture

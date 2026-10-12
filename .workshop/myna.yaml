@@ -162,12 +162,16 @@ actions:
     # render_check is their test, so measure it here too.
     dbus-run-session -- xvfb-run -a -s "-screen 0 800x600x24" \
       cargo llvm-cov run --no-report --example render_check
-    # Four exports over every profraw, silent until the summary table.
-    echo "cov: tests done; exporting reports (about two minutes, no output until the summary)" >&2
-    cargo llvm-cov report --cobertura --output-path target/coverage/rust-tests.cobertura.xml
-    cargo llvm-cov report --lcov --output-path target/coverage/rust.lcov
-    cargo llvm-cov report --html --output-dir target/coverage/html
-    cargo llvm-cov report --summary-only
+    # CI's gate reads only the merged export `exercise` writes (--no-reports).
+    # Not an early `exit`: workshop reports an action's `exit 0` as status 1.
+    if [ "${1:-}" != --no-reports ]; then
+      # Four exports over every profraw, silent until the summary table.
+      echo "cov: tests done; exporting reports (about two minutes, no output until the summary)" >&2
+      cargo llvm-cov report --cobertura --output-path target/coverage/rust-tests.cobertura.xml
+      cargo llvm-cov report --lcov --output-path target/coverage/rust.lcov
+      cargo llvm-cov report --html --output-dir target/coverage/html
+      cargo llvm-cov report --summary-only
+    fi
 
   # Python suite coverage: branch coverage + per-test contexts, HTML +
   # term-missing + Cobertura (tests-only). Stashes .coverage for `exercise`.

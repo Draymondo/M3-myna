@@ -58,7 +58,7 @@ help: ## List targets, grouped as in this file
 ##@ Gates (one per CI job; `preflight` is all of them)
 
 .PHONY: preflight
-preflight: check test coverage ## Everything CI blocks a merge on: check + test + coverage
+preflight: check test coverage-gate ## Everything CI blocks a merge on: check + test + the patch gate
 
 .PHONY: check
 check: lint-client lint-server lint-snaps lint-shell lint-workflows lint-client-deps i18n-check ## Static gates (CI `check` job)
@@ -70,7 +70,15 @@ test: test-client test-server test-extension test-noble ## Every blocking suite 
 # exercise and the reports built on the merged exports. The patch gate at the
 # end is the only blocking part; the project-level numbers are informational.
 .PHONY: coverage
-coverage: cov-client cov-server cov-extension exercise deadcode cov-patch ## Coverage + dead-code report + patch gate (CI `coverage` job)
+coverage: cov-client cov-server cov-extension exercise deadcode cov-patch ## Coverage + dead-code report + patch gate
+
+# What CI runs: the measured suites and the gate, none of the reports read
+# only by a person, who runs `coverage` locally for those.
+.PHONY: coverage-gate
+coverage-gate: ## The patch gate alone over the measured suites (CI `coverage` job)
+	$(WS) cov --no-reports
+	$(WS) py-cov
+	$(MAKE) exercise cov-patch
 
 .PHONY: spread
 spread: spread-build ## Confined e2e suite in a local KVM VM (CI `spread` job; needs prebuilt snaps)
