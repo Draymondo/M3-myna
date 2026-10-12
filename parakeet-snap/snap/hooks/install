@@ -42,10 +42,17 @@ modelctl set --package stream-partial-tail-seconds="0"
 # so fall back to cpu by name: it runs everywhere this snap installs, and a
 # snap with no active engine has a daemon that exits on every start.
 #
-if snapctl is-connected hardware-observe || lscpu -V &>/dev/null; then
-    modelctl use-engine --auto --assume-yes --no-restart --verbose ||
-        modelctl use-engine cpu --assume-yes --no-restart
-else
+# modelctl matches nvidia-gpu on the vendor id alone, so first ask the driver:
+# one this snap cannot use (none, a module that did not build, older than
+# CUDA 13) would get the GPU engine and its components for nothing (#49).
+#
+if ! snapctl is-connected hardware-observe && ! lscpu -V &>/dev/null; then
     echo "hardware-observe is not connected: selecting the cpu engine"
     modelctl use-engine cpu --assume-yes --no-restart
+elif ! python3 -m myna.server.cuda_probe 13.0; then
+    echo "selecting the cpu engine"
+    modelctl use-engine cpu --assume-yes --no-restart
+else
+    modelctl use-engine --auto --assume-yes --no-restart --verbose ||
+        modelctl use-engine cpu --assume-yes --no-restart
 fi

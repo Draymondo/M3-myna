@@ -265,11 +265,28 @@ def test_multi_engine_snaps_declare_the_reselect_hook(snap_dir: str) -> None:
     )
 
 
-def _run_reselect_hook(snap_dir: str, tmp_path: Path, *, status: str, use_engine_rc: int = 0):
+def _fake_python(bin_dir: Path, *, gpu: bool) -> None:
+    """The snap's python3, with the CUDA probe scripted: real probes would
+    answer for whatever machine runs the suite."""
+    python = bin_dir / "python3"
+    python.write_text(
+        f"""#!/bin/sh
+if [ "$1 $2" = "-m myna.server.cuda_probe" ]; then exit {0 if gpu else 1}; fi
+exec {sys.executable} "$@"
+""",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+
+
+def _run_reselect_hook(
+    snap_dir: str, tmp_path: Path, *, status: str, use_engine_rc: int = 0, gpu: bool = True
+):
     import subprocess
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    _fake_python(bin_dir, gpu=gpu)
     calls = tmp_path / "calls"
     fakes = {
         "modelctl": f"""#!/bin/sh
@@ -325,7 +342,14 @@ def test_a_failed_reselection_keeps_the_connection(snap_dir: str, tmp_path: Path
     assert result.returncode == 0, result.stderr
 
 
-def _run_install_hook(snap_dir: str, tmp_path: Path, *, components: list[str]) -> list[str]:
+def _run_install_hook(
+    snap_dir: str,
+    tmp_path: Path,
+    *,
+    components: list[str],
+    hardware_observe: bool = False,
+    gpu: bool = False,
+) -> list[str]:
     """Run an install hook without hardware-observe against fake snapctl and
     modelctl; return the calls.
 
@@ -347,7 +371,7 @@ echo "modelctl $*" >> {calls}
 """,
         "snapctl": f"""#!/bin/sh
 echo "snapctl $*" >> {calls}
-case "$1" in is-connected) exit 1 ;; esac
+case "$1" in is-connected) exit {0 if hardware_observe else 1} ;; esac
 """,
         "lscpu": "#!/bin/sh\nexit 1\n",
         "logger": """#!/bin/sh
@@ -357,7 +381,7 @@ case " $* " in *" --stderr "*) cat >&2 ;; *) cat >/dev/null ;; esac
     for tool, body in fakes.items():
         (bin_dir / tool).write_text(body, encoding="utf-8")
         (bin_dir / tool).chmod(0o755)
-    (bin_dir / "python3").symlink_to(sys.executable)  # the snap's python has PyYAML
+    _fake_python(bin_dir, gpu=gpu)  # the snap's python has PyYAML
     result = subprocess.run(
         [str(root / "snap" / "hooks" / "install")],
         env={
@@ -386,6 +410,45 @@ def test_a_sideload_without_the_default_model_keeps_an_installed_one(tmp_path: P
 def test_the_default_model_wins_when_it_is_installed(tmp_path: Path) -> None:
     ran = _run_install_hook("whisper-snap", tmp_path, components=["model-tiny", "model-base"])
     assert "snapctl set cache.active-model=base" in ran, ran
+
+
+@pytest.mark.parametrize("snap_dir", MULTI_ENGINE_SNAPS)
+def test_install_scores_hardware_when_the_gpu_is_usable(snap_dir: str, tmp_path: Path) -> None:
+    ran = _run_install_hook(
+        snap_dir, tmp_path, components=["model-base"], hardware_observe=True, gpu=True
+    )
+    assert any(c.startswith("modelctl use-engine --auto") for c in ran), ran
+
+
+@pytest.mark.parametrize("snap_dir", MULTI_ENGINE_SNAPS)
+def test_install_keeps_the_gpu_engine_off_a_driver_it_cannot_use(
+    snap_dir: str, tmp_path: Path
+) -> None:
+    """modelctl matches nvidia-gpu on the vendor id alone, so --auto would pick
+    it, and pull gigabytes of components, for a driver the snap cannot reach
+    (#49)."""
+    ran = _run_install_hook(
+        snap_dir, tmp_path, components=["model-base"], hardware_observe=True, gpu=False
+    )
+    assert "modelctl use-engine cpu --assume-yes --no-restart" in ran, ran
+    assert not any("--auto" in c for c in ran), ran
+
+
+@pytest.mark.parametrize("snap_dir", MULTI_ENGINE_SNAPS)
+def test_reselection_keeps_the_gpu_engine_off_a_driver_it_cannot_use(
+    snap_dir: str, tmp_path: Path
+) -> None:
+    result, ran = _run_reselect_hook(snap_dir, tmp_path, status='{"engine": "cpu"}', gpu=False)
+    assert result.returncode == 0, result.stderr
+    assert any(c.startswith("use-engine cpu") for c in ran), ran
+    assert not any("--auto" in c for c in ran), ran
+
+
+@pytest.mark.parametrize("snap_dir", MULTI_ENGINE_SNAPS)
+def test_the_probe_guards_the_only_gpu_engine(snap_dir: str) -> None:
+    """The probe answers for NVIDIA alone: a snap gaining another accelerator
+    engine must not have it skipped because NVIDIA is unusable."""
+    assert _engines(snap_dir) == ["cpu", "nvidia-gpu"]
 
 
 def test_declares_every_engine_it_ships(snap) -> None:
@@ -609,7 +672,7 @@ def test_models_declare_realtime_transcription(snap) -> None:
         )
 
 
-def _engines(snap_dir: str) -> dict[str, dict]:
+def _engine_manifests(snap_dir: str) -> dict[str, dict]:
     return {
         path.parent.name: yaml.safe_load(path.read_text(encoding="utf-8"))
         for path in sorted((REPO_ROOT / snap_dir / "engines").glob("*/engine.yaml"))
@@ -632,7 +695,7 @@ def test_every_component_an_engine_needs_is_declared_and_packed(snap) -> None:
         if (m := re.match(r"\(component/([\w-]+)\)", str(target)))
     }
     root = REPO_ROOT / snap_dir
-    for engine_name, engine in _engines(snap_dir).items():
+    for engine_name, engine in _engine_manifests(snap_dir).items():
         needed = []
         runtime = root / "runtimes" / engine["runtime"] / "runtime.yaml"
         assert runtime.is_file(), f"{name}: engine {engine_name} names a missing runtime"
@@ -652,7 +715,7 @@ def test_gpu_engines_reach_the_gpu(snap) -> None:
     snap_dir, name, recipe = snap
     gpu_engines = [
         engine_name
-        for engine_name, engine in _engines(snap_dir).items()
+        for engine_name, engine in _engine_manifests(snap_dir).items()
         if any(d.get("type") == "gpu" for d in (engine.get("devices") or {}).get("allof") or [])
     ]
     if not gpu_engines:

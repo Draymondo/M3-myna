@@ -39,12 +39,13 @@ cache lacks them; it needs NeMo and torch, which it installs into its own uv
 environment (about 2 GB, locked in `export_parakeet_onnx.py.lock`), and a 2.4 GB
 checkpoint download.
 
-Needs an NVIDIA driver of 580 or later (CUDA 13) and a Turing or newer GPU. The
-engine is matched on the NVIDIA vendor id alone, so an older card or driver is
-selected anyway. When the CUDA provider cannot load there (no driver, or one
-older than CUDA 13), the server runs the fp32 graphs on the CPU, slower, and
-tells the user each session; `use-engine cpu` switches to the faster int8
-graphs for good.
+Needs an NVIDIA driver of 580 or later (CUDA 13) and a Turing or newer GPU.
+modelctl matches the engine on the NVIDIA vendor id alone, so the install and
+hardware-observe hooks first ask the driver (`python3 -m myna.server.cuda_probe
+13.0`) and select `cpu` when this snap cannot use it. When the CUDA provider
+cannot load later (a driver removed or downgraded since), the server runs the
+fp32 graphs on the CPU, slower, and tells the user each session; `use-engine
+cpu` switches to the faster int8 graphs for good.
 
 ```bash
 sudo snap install --dangerous \

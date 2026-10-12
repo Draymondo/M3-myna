@@ -65,9 +65,15 @@ use_cpu() {
     modelctl use-engine cpu --assume-yes --no-restart
 }
 
-if snapctl is-connected hardware-observe || lscpu -V &>/dev/null; then
-    modelctl use-engine --auto --assume-yes --no-restart --verbose || use_cpu
-else
+# modelctl matches nvidia-gpu on the vendor id alone, so ask the driver first:
+# one this snap cannot use (none, a module that did not build, older than
+# CUDA 12) would get the GPU engine and its components for nothing (#49).
+if ! snapctl is-connected hardware-observe && ! lscpu -V &>/dev/null; then
     echo "hardware-observe is not connected: selecting the cpu engine"
     use_cpu
+elif ! python3 -m myna.server.cuda_probe 12.0; then
+    echo "selecting the cpu engine"
+    use_cpu
+else
+    modelctl use-engine --auto --assume-yes --no-restart --verbose || use_cpu
 fi

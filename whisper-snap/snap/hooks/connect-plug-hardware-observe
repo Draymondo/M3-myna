@@ -19,6 +19,10 @@ if [ -z "$engine" ]; then
     exit 0
 fi
 
-# A failing connect hook makes snapd undo the connection.
-modelctl use-engine --auto --assume-yes --verbose ||
-    echo "re-selecting the engine failed: keeping $engine" >&2
+# A failing connect hook makes snapd undo the connection. The driver check
+# is the install hook's: nvidia-gpu is matched on the vendor id alone.
+if python3 -m myna.server.cuda_probe 12.0; then
+    modelctl use-engine --auto --assume-yes --verbose
+else
+    modelctl use-engine cpu --assume-yes --verbose
+fi || echo "re-selecting the engine failed: keeping $engine" >&2
