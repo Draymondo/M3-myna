@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 from myna.core import (
     PHASE_PREPARING,
     PHASE_READY,
+    WARNING_GPU_UNAVAILABLE,
     AudioFormat,
     Capabilities,
     Disposition,
@@ -46,6 +47,7 @@ from myna.core import (
     TranscriptionFinal,
     TranscriptionProgress,
 )
+from myna.server.lifecycle import GPU_UNAVAILABLE_MESSAGE
 from myna.testbed.adapter import Candidate, runtime_versions
 from myna.testbed.streaming.strategies import Hypothesis, Word
 
@@ -285,6 +287,9 @@ class FasterWhisperAdapter:
         self._batch_vad_filter = batch_vad_filter
         self._model: Any | None = None
         self._model_lock = asyncio.Lock()
+        # Where the loaded model serves, which a GPU engine without a usable
+        # GPU makes the CPU (see _load_model).
+        self._serving_device = device
 
     @property
     def streaming(self) -> bool:
@@ -317,15 +322,17 @@ class FasterWhisperAdapter:
             # output_language to the translate task yet — advertise honestly.
             translation=False,
             streaming=self._streaming,
-            # CTranslate2 raises rather than falling back when the device is
-            # unavailable, so the requested device is the one that serves.
             runtime={
                 **runtime_versions(
                     ("ctranslate2", "ctranslate2"), ("faster_whisper", "faster-whisper")
                 ),
-                "device": self._device,
+                "device": self._serving_device,
             },
         )
+
+    @property
+    def gpu_unavailable(self) -> bool:
+        return self._serving_device != self._device
 
     def _check_compute_type(self) -> None:
         """Refuse arithmetic this device cannot do, before loading weights.
@@ -357,22 +364,33 @@ class FasterWhisperAdapter:
     async def _load_model(self) -> Any:
         async with self._model_lock:
             if self._model is None:
+                import ctranslate2
                 from faster_whisper import WhisperModel
 
-                self._check_compute_type()
+                device, compute_type = self._device, self._compute_type
+                if device == "cuda" and ctranslate2.get_cuda_device_count() == 0:
+                    # No CUDA device CTranslate2 can open: no driver, or one
+                    # older than its CUDA runtime. Construction would raise and
+                    # fail every utterance; serve on the CPU in the type it
+                    # picks for the weights, and say so each session.
+                    _log.warning("whisper: no usable CUDA device; serving on the CPU")
+                    device, compute_type = "cpu", "default"
+                else:
+                    self._check_compute_type()
                 # blocking download + load: keep it off the event loop
                 model = await asyncio.to_thread(
                     WhisperModel,
                     self._model_size,
-                    device=self._device,
-                    compute_type=self._compute_type,
+                    device=device,
+                    compute_type=compute_type,
                     download_root=self._download_root,
                 )
                 self._model = model
+                self._serving_device = device
                 _log.info(
                     "Loaded Whisper model with requested compute type %s; "
                     "effective CTranslate2 compute type is %s",
-                    self._compute_type,
+                    compute_type,
                     model.model.compute_type,
                 )
         return self._model
@@ -427,7 +445,16 @@ class FasterWhisperAdapter:
             # audio. The client gates on this (IE115 STATUS{ready}) — without it
             # the client drops all audio waiting for readiness while we wait for
             # audio, which would deadlock clients waiting for readiness.
-            await emit(TranscriptionProgress(phase=PHASE_READY))
+            if self.gpu_unavailable:
+                await emit(
+                    TranscriptionProgress(
+                        phase=PHASE_READY,
+                        warning=GPU_UNAVAILABLE_MESSAGE,
+                        warning_code=WARNING_GPU_UNAVAILABLE,
+                    )
+                )
+            else:
+                await emit(TranscriptionProgress(phase=PHASE_READY))
 
             if self._streaming:
                 await self._run_streaming_session(model, config, audio, emit)

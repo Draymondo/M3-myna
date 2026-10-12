@@ -128,3 +128,87 @@ def test_a_deferral_is_not_a_request_and_is_left_to_ctranslate2(monkeypatch, def
         type("M", (), {"get_supported_compute_types": staticmethod(explode)}),
     )
     FasterWhisperAdapter("tiny", compute_type=deferral)._check_compute_type()
+
+
+# ─── GPU unavailable ─────────────────────────────────────────────────────────
+
+
+class _RecordingWhisperModel:
+    """faster_whisper.WhisperModel, recording where it was asked to load."""
+
+    loads: list[tuple[str, str]] = []
+
+    def __init__(self, model_size, *, device, compute_type, download_root):
+        self.loads.append((device, compute_type))
+        self.model = type("CT2", (), {"compute_type": compute_type})()
+
+    def transcribe(self, samples, **kwargs):
+        return iter(()), None
+
+
+def _fake_whisper_stack(monkeypatch, cuda_devices):
+    module = type(
+        "M",
+        (),
+        {
+            "get_cuda_device_count": staticmethod(lambda: cuda_devices),
+            "get_supported_compute_types": staticmethod(
+                lambda device: {"float16", "float32", "int8"} if device == "cuda" else {"float32"}
+            ),
+        },
+    )
+    monkeypatch.setitem(sys.modules, "ctranslate2", module)
+    _RecordingWhisperModel.loads = []
+    monkeypatch.setitem(
+        sys.modules, "faster_whisper", type("F", (), {"WhisperModel": _RecordingWhisperModel})
+    )
+
+
+def test_a_cuda_engine_without_a_usable_gpu_loads_on_the_cpu(monkeypatch):
+    """The reporter's whisper engine failed every utterance: \"CUDA driver
+    version is insufficient for CUDA runtime version\", then a float16 refusal.
+    CTranslate2 sees no CUDA device then; load on the CPU in its own type."""
+    _fake_whisper_stack(monkeypatch, cuda_devices=0)
+    adapter = FasterWhisperAdapter("small", device="cuda", compute_type="float16")
+
+    asyncio.run(adapter._load_model())
+
+    assert _RecordingWhisperModel.loads == [("cpu", "default")]
+    assert adapter.capabilities().runtime["device"] == "cpu"
+
+
+def test_a_usable_gpu_loads_as_asked(monkeypatch):
+    _fake_whisper_stack(monkeypatch, cuda_devices=1)
+    adapter = FasterWhisperAdapter("small", device="cuda", compute_type="float16")
+
+    asyncio.run(adapter._load_model())
+
+    assert _RecordingWhisperModel.loads == [("cuda", "float16")]
+    assert adapter.capabilities().runtime["device"] == "cuda"
+
+
+def test_a_session_on_a_cpu_fallback_says_so_when_ready(monkeypatch):
+    from myna.core import PHASE_READY, WARNING_GPU_UNAVAILABLE
+    from myna.server.lifecycle import GPU_UNAVAILABLE_MESSAGE
+
+    _fake_whisper_stack(monkeypatch, cuda_devices=0)
+    adapter = FasterWhisperAdapter("small", device="cuda", compute_type="float16")
+
+    async def drive():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        async def no_audio():
+            for chunk in ():
+                yield chunk
+
+        fmt = AudioFormat(sample_rate_hz=WHISPER_RATE, channels=1, sample_width_bytes=2)
+        await adapter.run_session(SessionConfig(audio_format=fmt), no_audio(), emit)
+        return events
+
+    warned = [e for e in asyncio.run(drive()) if getattr(e, "warning", None)]
+    assert [(e.phase, e.warning, e.warning_code) for e in warned] == [
+        (PHASE_READY, GPU_UNAVAILABLE_MESSAGE, WARNING_GPU_UNAVAILABLE)
+    ]
