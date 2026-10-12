@@ -79,6 +79,7 @@ from numpy.typing import NDArray
 from myna.core import (
     PHASE_PREPARING,
     PHASE_READY,
+    WARNING_MEMORY_PRESSURE,
     AudioFormat,
     Capabilities,
     Disposition,
@@ -905,7 +906,9 @@ class ParakeetAdapter:
             words = model.transcribe_words(samples)
             warning = model.pressure_monitor.observe_decode(majflt_before, sample_majflt())
             if warning is not None:
-                warnings.append(TranscriptionProgress(warning=warning))
+                warnings.append(
+                    TranscriptionProgress(warning=warning, warning_code=WARNING_MEMORY_PRESSURE)
+                )
             return Hypothesis(words=[Word(w.text, w.start + offset, w.end + offset) for w in words])
 
         text = await run_streaming_loop(
@@ -956,7 +959,9 @@ class ParakeetAdapter:
             words = model.transcribe_words(samples)
             warning = model.pressure_monitor.observe_decode(majflt_before, sample_majflt())
             if warning is not None:
-                progress = TranscriptionProgress(warning=warning)
+                progress = TranscriptionProgress(
+                    warning=warning, warning_code=WARNING_MEMORY_PRESSURE
+                )
                 asyncio.run_coroutine_threadsafe(emit_on_loop(progress), event_loop)
             return Hypothesis(words=[Word(w.text, w.start + offset, w.end + offset) for w in words])
 

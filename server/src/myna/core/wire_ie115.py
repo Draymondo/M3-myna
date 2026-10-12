@@ -338,6 +338,8 @@ class Ie115Encoder:
                 frame["snippet"] = event.snippet
             if event.warning:  # additive, optional (T10 memory-pressure notice)
                 frame["warning"] = event.warning
+            if event.warning_code:
+                frame["warning_code"] = event.warning_code
             return frame
         if isinstance(event, TranscriptionFinal):
             frame = {

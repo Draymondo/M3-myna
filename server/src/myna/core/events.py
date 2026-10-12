@@ -37,11 +37,13 @@ Semantics:
   (2026-07-01, plan T42) so the client can gate audio on model residency — the
   accept-gate — over the wire, not just infer it. ``warning`` (plan T10,
   2026-08-29) is an additive, optional, human-readable string for a
-  non-terminal condition worth surfacing mid-session - currently only runtime
-  memory-pressure detection (``myna.server.lifecycle.MemoryPressureMonitor``):
-  the machine cannot hold the model resident, so decoding is thrashing rather
-  than failing. Debounced to once per session by the emitter; absent (``None``)
-  on every other progress event.
+  non-terminal condition worth surfacing mid-session: runtime memory pressure
+  (``myna.server.lifecycle.MemoryPressureMonitor``), where the machine cannot
+  hold the model resident, so decoding is thrashing rather than failing; or a
+  GPU engine whose driver could not load, serving on the CPU instead.
+  Debounced to once per session by the emitter; absent (``None``) on every
+  other progress event. ``warning_code`` (``WARNING_*``) rides beside it, so a
+  client can word the condition in the user's language.
 - ``transcription.final``    — stable, committed text for one utterance
   segment. Never retracted.
 - ``transcription.done``     — end of session; carries the complete transcript.
@@ -64,6 +66,11 @@ from typing import Any, ClassVar
 PHASE_PREPARING = "preparing"  # model loading; client should show "loading…"
 PHASE_READY = "ready"  # model resident, safe to send audio; nothing decoding yet
 PHASE_TRANSCRIBING = "transcribing"  # audio being processed
+
+# progress.warning_code values: what a client translates, where the warning
+# text is the server's own English
+WARNING_MEMORY_PRESSURE = "memory_pressure"  # decoding is thrashing, not failing
+WARNING_GPU_UNAVAILABLE = "gpu_unavailable"  # a GPU engine is serving on the CPU
 
 
 # Disposition enum for streaming mode (T04, feature 007-streaming-mode)
@@ -96,14 +103,16 @@ class TranscriptionProgress:
     resident and the service will accept audio (gate open, nothing decoding
     yet), else ``"transcribing"`` (the default), so a cold load reads as
     "loading…" not a hang and the client can gate audio on ``ready``.
-    ``warning`` (T10) is an optional, human-readable, non-terminal notice -
-    currently only memory-pressure detection - debounced to once per session
-    by the emitter; ``None`` on every other progress event."""
+    ``warning`` (T10) is an optional, human-readable, non-terminal notice,
+    debounced to once per session by the emitter; ``None`` on every other
+    progress event. ``warning_code`` names its condition (``WARNING_*``) for a
+    client that words it in the user's language."""
 
     type: ClassVar[str] = "transcription.progress"
     snippet: str | None = None
     phase: str = PHASE_TRANSCRIBING
     warning: str | None = None
+    warning_code: str | None = None
 
 
 @dataclass(frozen=True)

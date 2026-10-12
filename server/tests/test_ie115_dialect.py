@@ -19,6 +19,7 @@ from _ie115_client import WsUnixIe115Client, pcm_to_append
 from _silence import SilenceSource
 
 from myna.core import (
+    WARNING_GPU_UNAVAILABLE,
     AudioFormat,
     Disposition,
     EventSink,
@@ -128,6 +129,14 @@ def test_encoder_progress_warning_is_additive():
         "state": "transcribing",
         "warning": "low on memory",
     }
+
+
+def test_encoder_progress_warning_carries_its_code():
+    enc = w.Ie115Encoder()
+    progress = TranscriptionProgress(warning="no GPU", warning_code=WARNING_GPU_UNAVAILABLE)
+    frame = _frame(enc.frames(progress))
+    assert frame["warning"] == "no GPU"
+    assert frame["warning_code"] == "gpu_unavailable"
 
 
 def test_encoder_finals_become_deltas_sharing_the_utterance_item():

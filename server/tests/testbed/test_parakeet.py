@@ -20,6 +20,7 @@ np = pytest.importorskip("numpy", reason="adapter extras not installed")
 from test_emission_invariants import assert_batch_degenerate
 
 from myna.core import (
+    WARNING_MEMORY_PRESSURE,
     AudioFormat,
     PcmChunk,
     SessionConfig,
@@ -196,8 +197,8 @@ async def test_streaming_decode_schedules_pressure_warning_across_the_thread(mon
     assert hyp.words, "sanity: the captured decode closure actually ran the fake model"
     await asyncio.sleep(0.01)  # let run_coroutine_threadsafe's scheduled coroutine execute
 
-    warnings = [e.warning for e in events if getattr(e, "warning", None)]
-    assert warnings == [lifecycle.MEMORY_PRESSURE_MESSAGE]
+    warnings = [(e.warning, e.warning_code) for e in events if getattr(e, "warning", None)]
+    assert warnings == [(lifecycle.MEMORY_PRESSURE_MESSAGE, WARNING_MEMORY_PRESSURE)]
 
 
 def test_streaming_cut_constants_must_be_positive():
@@ -318,8 +319,8 @@ async def test_batch_session_surfaces_memory_pressure_warning_once(monkeypatch):
     adapter._model = model
 
     events = await run_session(adapter, audio_seconds=2.0)
-    warnings = [e.warning for e in events if getattr(e, "warning", None)]
-    assert warnings == [lifecycle.MEMORY_PRESSURE_MESSAGE]
+    warnings = [(e.warning, e.warning_code) for e in events if getattr(e, "warning", None)]
+    assert warnings == [(lifecycle.MEMORY_PRESSURE_MESSAGE, WARNING_MEMORY_PRESSURE)]
 
     # A second session on the same (still undersized) model warns again.
     events2 = await run_session(adapter, audio_seconds=2.0)

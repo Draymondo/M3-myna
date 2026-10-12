@@ -3,6 +3,7 @@ import pytest
 from myna.core import (
     PHASE_PREPARING,
     PHASE_TRANSCRIBING,
+    WARNING_GPU_UNAVAILABLE,
     Segment,
     TranscriptionDone,
     TranscriptionError,
@@ -53,6 +54,16 @@ def test_progress_warning_defaults_to_none_and_is_additive():
     wire = event_to_wire(TranscriptionProgress(warning="low on memory"))
     assert wire["data"]["warning"] == "low on memory"
     assert event_from_wire(wire).warning == "low on memory"
+
+
+def test_progress_warning_code_names_the_condition_for_the_client():
+    # The text is the server's English; the code is what a client translates.
+    assert TranscriptionProgress().warning_code is None
+    wire = event_to_wire(
+        TranscriptionProgress(warning="no GPU", warning_code=WARNING_GPU_UNAVAILABLE)
+    )
+    assert wire["data"]["warning_code"] == "gpu_unavailable"
+    assert event_from_wire(wire).warning_code == WARNING_GPU_UNAVAILABLE
 
 
 def test_unknown_event_is_ignored_not_rejected():
