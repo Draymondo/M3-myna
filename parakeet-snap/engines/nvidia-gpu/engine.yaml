@@ -10,8 +10,9 @@ vendor: Canonical Ltd
 
 # Matched on the vendor alone. modelctl can also check vram and
 # compute-capability, but reads both through nvidia-smi, which this snap does
-# not stage - either key would make the engine never match. A GPU or driver
-# CUDA 13 cannot use fails at load instead, naming the CUDA provider.
+# not stage - either key would make the engine never match. On a GPU or
+# driver CUDA 13 cannot use, the server serves the fp32 graphs on the CPU
+# and warns each session.
 devices:
   allof:
     - type: gpu

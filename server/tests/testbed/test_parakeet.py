@@ -20,6 +20,8 @@ np = pytest.importorskip("numpy", reason="adapter extras not installed")
 from test_emission_invariants import assert_batch_degenerate
 
 from myna.core import (
+    PHASE_READY,
+    WARNING_GPU_UNAVAILABLE,
     WARNING_MEMORY_PRESSURE,
     AudioFormat,
     PcmChunk,
@@ -67,6 +69,8 @@ class _FakeParakeetModel:
         # (begin_session/observe_decode) against whatever model it holds; the
         # fake needs a real one so that path is exercised, not stubbed out.
         self.pressure_monitor = MemoryPressureMonitor()
+        self.gpu_unavailable = False
+        self.device = "cpu"
 
     def transcribe_words(self, samples) -> list[Word]:
         self.calls.append(len(samples))
@@ -778,6 +782,90 @@ def test_cuda_init_builds_sessions_on_the_cuda_provider(tmp_path, monkeypatch):
     assert model._encoder.requested_providers[0] == CUDA_PROVIDER
     assert model._decoder_joint.requested_providers[0] == CUDA_PROVIDER
     assert model._encoder_run_options.entries == {"memory.enable_memory_arena_shrinkage": "gpu:0"}
+
+
+class _CudaLessSession(_FakeSession):
+    """An InferenceSession on a machine whose CUDA provider cannot load (no
+    libcuda.so.1, an old driver): ORT logs it and hands back a CPU session."""
+
+    def get_providers(self):
+        return ["CPUExecutionProvider"]
+
+
+def _fake_ort(monkeypatch, session):
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            InferenceSession=session,
+            SessionOptions=_FakeSessionOptions,
+            GraphOptimizationLevel=_FakeGraphOptimizationLevel,
+            RunOptions=_FakeRunOptions,
+        ),
+    )
+
+
+def test_cuda_init_serves_on_the_cpu_when_the_cuda_provider_cannot_load(tmp_path, monkeypatch):
+    """#49: a GPU engine whose driver is missing failed every utterance. The
+    encoder ORT built instead is a working CPU session: keep it, and put the
+    joint on the CPU too, driven the CPU way."""
+    _touch(tmp_path, FP32_ENCODER_FILE, FP32_JOINT_FILE)
+    (tmp_path / "vocab.txt").write_text("<blk> 0\n", encoding="utf-8")
+    _fake_ort(monkeypatch, _CudaLessSession)
+
+    model = _ParakeetOnnx(str(tmp_path), device="cuda")
+
+    assert model.gpu_unavailable
+    assert model.device == "cpu"
+    assert model._decoder_joint.requested_providers == ["CPUExecutionProvider"]
+    assert model._encoder_run_options is None
+
+
+def test_a_loaded_cuda_provider_is_not_reported_unavailable(tmp_path, monkeypatch):
+    _touch(tmp_path, FP32_ENCODER_FILE, FP32_JOINT_FILE)
+    (tmp_path / "vocab.txt").write_text("<blk> 0\n", encoding="utf-8")
+    _fake_ort(monkeypatch, _FakeSession)
+
+    model = _ParakeetOnnx(str(tmp_path), device="cuda")
+
+    assert not model.gpu_unavailable
+    assert model.device == "cuda"
+
+
+def test_a_cuda_encoder_beside_a_cpu_joint_is_refused(tmp_path, monkeypatch):
+    """No one device to drive both on: the joint's IOBinding is CPU-only."""
+
+    class _JointOffCuda(_FakeSession):
+        def get_providers(self):
+            if self.path.endswith(FP32_JOINT_FILE):
+                return ["CPUExecutionProvider"]
+            return super().get_providers()
+
+    _touch(tmp_path, FP32_ENCODER_FILE, FP32_JOINT_FILE)
+    (tmp_path / "vocab.txt").write_text("<blk> 0\n", encoding="utf-8")
+    _fake_ort(monkeypatch, _JointOffCuda)
+
+    with pytest.raises(RuntimeError, match="decoder_joint: CUDAExecutionProvider is not active"):
+        _ParakeetOnnx(str(tmp_path), device="cuda")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_session_on_a_cpu_fallback_says_so_when_ready(streaming):
+    from myna.server import lifecycle
+
+    adapter = ParakeetAdapter(device="cuda", streaming=streaming)
+    model = _FakeParakeetModel("hello")
+    model.gpu_unavailable = True
+    adapter._model = model
+
+    events = await run_session(adapter, audio_seconds=1.0)
+
+    warned = [e for e in events if getattr(e, "warning", None)]
+    assert [(e.phase, e.warning_code) for e in warned] == [(PHASE_READY, WARNING_GPU_UNAVAILABLE)]
+    assert warned[0].warning == lifecycle.GPU_UNAVAILABLE_MESSAGE
+    assert isinstance(events[-1], TranscriptionDone)
+    assert adapter.capabilities().runtime["execution_provider"] == "CPUExecutionProvider"
 
 
 def test_cuda_arena_keeps_power_of_two_growth():

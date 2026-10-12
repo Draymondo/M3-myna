@@ -79,6 +79,7 @@ from numpy.typing import NDArray
 from myna.core import (
     PHASE_PREPARING,
     PHASE_READY,
+    WARNING_GPU_UNAVAILABLE,
     WARNING_MEMORY_PRESSURE,
     AudioFormat,
     Capabilities,
@@ -91,7 +92,7 @@ from myna.core import (
     TranscriptionFinal,
     TranscriptionProgress,
 )
-from myna.server.lifecycle import MemoryPressureMonitor, sample_majflt
+from myna.server.lifecycle import GPU_UNAVAILABLE_MESSAGE, MemoryPressureMonitor, sample_majflt
 from myna.testbed.adapter import Candidate, runtime_versions
 from myna.testbed.streaming.coverage import (
     RETRY_PADS,
@@ -201,12 +202,16 @@ def encoder_run_options(ort: Any, device: Device) -> Any:
     return options
 
 
-def _require_cuda(session: object, name: str) -> None:
-    """ORT drops to CPU with only a log line when the CUDA provider cannot load
-    (a missing libcudnn, an old driver), and the GPU engine would then serve at
-    a tenth of its speed. Refuse instead."""
+def _on_cuda(session: object) -> bool:
     providers = session.get_providers()  # type: ignore[attr-defined]
-    if not providers or providers[0] != "CUDAExecutionProvider":
+    return bool(providers) and providers[0] == "CUDAExecutionProvider"
+
+
+def _require_cuda(session: object, name: str) -> None:
+    """Refuse a session ORT left on the CPU beside one it put on CUDA: the two
+    would need different devices' decode paths."""
+    if not _on_cuda(session):
+        providers = session.get_providers()  # type: ignore[attr-defined]
         raise RuntimeError(
             f"parakeet {name}: CUDAExecutionProvider is not active (got {providers}); "
             "check the CUDA runtime libraries and the NVIDIA driver"
@@ -441,7 +446,6 @@ class _ParakeetOnnx:
         cpu = ["CPUExecutionProvider"]
         # CPU stays in the list for the shape arithmetic ORT keeps off the GPU.
         providers = [CUDA_PROVIDER, *cpu] if device == "cuda" else cpu
-        self.device: Device = device
 
         def opts(intra: int) -> ort.SessionOptions:
             o = ort.SessionOptions()
@@ -471,11 +475,20 @@ class _ParakeetOnnx:
         encoder_opts = opts(encoder_threads or _encoder_threads())
         _log.info("parakeet encoder: %s on %s", files.precision, device)
         self._encoder = ort.InferenceSession(files.encoder, encoder_opts, providers=providers)
+        # ORT drops to the CPU with only a log line when the CUDA provider
+        # cannot load: no libcuda.so.1 in the snap, a driver older than CUDA 13,
+        # a kernel module that did not build. The session it built is a
+        # working CPU one, so serve on it, slower, and say so each session,
+        # rather than fail every utterance (#49).
+        self.gpu_unavailable = device == "cuda" and not _on_cuda(self._encoder)
+        if self.gpu_unavailable:
+            _log.warning("parakeet: the CUDA provider did not load; serving on the CPU")
+            device, providers = "cpu", cpu
+        self.device: Device = device
         self._decoder_joint = ort.InferenceSession(
             files.decoder_joint, opts(1), providers=providers
         )
         if device == "cuda":
-            _require_cuda(self._encoder, "encoder")
             _require_cuda(self._decoder_joint, "decoder_joint")
         self._encoder_run_options = encoder_run_options(ort, device)
         self._vocab, self._blank_idx = _load_vocab(model_dir)
@@ -790,15 +803,19 @@ class ParakeetAdapter:
             punctuation=True,  # Parakeet v3 emits punctuation + capitalisation
             translation=False,
             streaming=self._streaming,
-            # The provider is the one the load enforces: a cuda session whose
-            # CUDA provider did not activate raises rather than serving on CPU.
+            # The device asked for until a load says where it actually serves.
             runtime={
                 **runtime_versions(("onnxruntime", "onnxruntime")),
                 "execution_provider": (
-                    "CUDAExecutionProvider" if self._device == "cuda" else "CPUExecutionProvider"
+                    "CUDAExecutionProvider"
+                    if self._serving_device() == "cuda"
+                    else "CPUExecutionProvider"
                 ),
             },
         )
+
+    def _serving_device(self) -> Device:
+        return self._model.device if self._model is not None else self._device
 
     async def _load_model(self) -> _ParakeetOnnx:
         async with self._model_lock:
@@ -857,7 +874,16 @@ class ParakeetAdapter:
             # session rather than staying silent forever after the first.
             model.pressure_monitor.begin_session()
             # Ready BEFORE pulling audio — the client gates on it.
-            await emit(TranscriptionProgress(phase=PHASE_READY))
+            if model.gpu_unavailable:
+                await emit(
+                    TranscriptionProgress(
+                        phase=PHASE_READY,
+                        warning=GPU_UNAVAILABLE_MESSAGE,
+                        warning_code=WARNING_GPU_UNAVAILABLE,
+                    )
+                )
+            else:
+                await emit(TranscriptionProgress(phase=PHASE_READY))
 
             if self._streaming:
                 await self._run_streaming_session(model, audio, emit)

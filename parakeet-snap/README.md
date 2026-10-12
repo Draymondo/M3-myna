@@ -41,7 +41,10 @@ checkpoint download.
 
 Needs an NVIDIA driver of 580 or later (CUDA 13) and a Turing or newer GPU. The
 engine is matched on the NVIDIA vendor id alone, so an older card or driver is
-selected anyway and the server then refuses to start, naming the CUDA provider.
+selected anyway. When the CUDA provider cannot load there (no driver, or one
+older than CUDA 13), the server runs the fp32 graphs on the CPU, slower, and
+tells the user each session; `use-engine cpu` switches to the faster int8
+graphs for good.
 
 ```bash
 sudo snap install --dangerous \

@@ -99,6 +99,12 @@ MEMORY_PRESSURE_MESSAGE = (
     "applications, or using a smaller model, should fix it."
 )
 
+GPU_UNAVAILABLE_MESSAGE = (
+    "The NVIDIA GPU could not be used, so the speech model is running on the "
+    "CPU, which is slower. Installing or updating the NVIDIA driver, then "
+    "restarting, should fix it."
+)
+
 
 def sample_majflt() -> int:
     """Major page fault counter for the current process (aggregated across
