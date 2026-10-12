@@ -177,10 +177,7 @@ fn transcribing() -> TranscriptionEvent {
 }
 
 fn snippet(text: &str) -> TranscriptionEvent {
-    TranscriptionEvent::Progress(Progress {
-        snippet: Some(text.into()),
-        phase: PHASE_TRANSCRIBING.into(),
-    })
+    TranscriptionEvent::Progress(Progress::snippet(PHASE_TRANSCRIBING, text))
 }
 
 fn final_seg(text: &str) -> TranscriptionEvent {

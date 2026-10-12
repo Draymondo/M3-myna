@@ -44,6 +44,9 @@ impl TextSink for StdoutSink {
                     fault.headline, fault.detail
                 );
             }
+            OrchestratorEvent::Warning { notice, .. } => {
+                eprintln!("⚠ {}: {}", notice.headline, notice.detail);
+            }
             OrchestratorEvent::Error { code, failure } => {
                 eprintln!("✗ {} [{code}]: {}", failure.headline, failure.detail);
             }

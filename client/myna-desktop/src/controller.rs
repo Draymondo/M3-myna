@@ -173,6 +173,7 @@ pub fn event_to_indicator(
         | OrchestratorEvent::Final(_)
         | OrchestratorEvent::Unstable(_)
         | OrchestratorEvent::CaptureLost { .. }
+        | OrchestratorEvent::Warning { .. }
         | OrchestratorEvent::AudioDropped => None,
     }
 }

@@ -38,6 +38,7 @@ pub use control::{ClientControl, ServerControl};
 pub use events::{
     Disposition, ErrorData, Progress, Segment, StreamingMode, TranscriptionEvent,
     TranscriptionFinal, WireError, PHASE_PREPARING, PHASE_READY, PHASE_TRANSCRIBING,
+    WARNING_GPU_UNAVAILABLE, WARNING_MEMORY_PRESSURE,
 };
 pub use mode::{effective_mode, streams_by_default, EffectiveMode, ModeSource};
 pub use protocol::PROTOCOL_VERSION;

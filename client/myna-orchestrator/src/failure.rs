@@ -68,6 +68,16 @@ pub fn model_connection_lost() -> String {
     tr("Model connection lost")
 }
 
+/// The headline for a backend warning: worded here for the conditions the wire
+/// names, the server's own text for any other.
+pub fn warning_headline(code: Option<&str>, text: &str) -> String {
+    match code {
+        Some(myna_core::WARNING_GPU_UNAVAILABLE) => tr("Using the CPU: GPU unavailable"),
+        Some(myna_core::WARNING_MEMORY_PRESSURE) => tr("Dictation is slow: low memory"),
+        _ => text.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +141,8 @@ mod tests {
             transcription_failed(),
             model_not_responding(),
             model_connection_lost(),
+            warning_headline(Some(myna_core::WARNING_GPU_UNAVAILABLE), ""),
+            warning_headline(Some(myna_core::WARNING_MEMORY_PRESSURE), ""),
             Failure::audio_lost(&CaptureError::Overloaded(1.0)).headline,
         ];
         for fault in [

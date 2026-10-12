@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-01 06:52+0100\n"
+"POT-Creation-Date: 2026-10-12 18:37+0100\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -21,7 +21,7 @@ msgstr ""
 msgid "Model not reachable"
 msgstr ""
 
-#: src/backend/mod.rs:82 src/backend/share.rs:90
+#: src/backend/mod.rs:82 src/backend/share.rs:91
 msgid "Model not compatible"
 msgstr ""
 
@@ -33,19 +33,19 @@ msgstr ""
 msgid "Model stopped"
 msgstr ""
 
-#: src/backend/share.rs:82
+#: src/backend/share.rs:83
 msgid "Model not connected"
 msgstr ""
 
-#: src/backend/share.rs:85
+#: src/backend/share.rs:86
 msgid "Model connected. Retry shortly"
 msgstr ""
 
-#: src/backend/share.rs:88
+#: src/backend/share.rs:89
 msgid "Model not running"
 msgstr ""
 
-#: src/backend/share.rs:91
+#: src/backend/share.rs:92
 msgid "Several models connected"
 msgstr ""
 
@@ -91,4 +91,12 @@ msgstr ""
 
 #: src/failure.rs:68
 msgid "Model connection lost"
+msgstr ""
+
+#: src/failure.rs:75
+msgid "Using the CPU: GPU unavailable"
+msgstr ""
+
+#: src/failure.rs:76
+msgid "Dictation is slow: low memory"
 msgstr ""

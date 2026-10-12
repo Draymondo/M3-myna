@@ -120,6 +120,13 @@ pub enum OrchestratorEvent {
     /// transcript is in. A UI shows the finishing phase from here, never a
     /// completion.
     CaptureLost { fault: Failure },
+    /// The backend serves, but worse than it should: a GPU engine on the CPU,
+    /// a model thrashing for memory. Not terminal. `code` is the wire's name
+    /// for the condition, when it gave one.
+    Warning {
+        code: Option<String>,
+        notice: Failure,
+    },
 }
 
 /// A side effect the driver must perform after a transition. Keeping effects as
@@ -366,6 +373,13 @@ impl Fsm {
         if let Some(snippet) = p.snippet {
             out.push(Action::Emit(OrchestratorEvent::Snippet(snippet)));
         }
+        if let Some(text) = p.warning {
+            let headline = failure::warning_headline(p.warning_code.as_deref(), &text);
+            out.push(Action::Emit(OrchestratorEvent::Warning {
+                code: p.warning_code,
+                notice: Failure::new(headline, text),
+            }));
+        }
     }
 
     /// Open the accept-gate the first time we see the model is resident, emitting
@@ -460,10 +474,7 @@ mod tests {
     }
 
     fn snippet(text: &str) -> TranscriptionEvent {
-        TranscriptionEvent::Progress(Progress {
-            snippet: Some(text.into()),
-            phase: PHASE_TRANSCRIBING.into(),
-        })
+        TranscriptionEvent::Progress(Progress::snippet(PHASE_TRANSCRIBING, text))
     }
 
     fn final_seg(text: &str) -> TranscriptionEvent {
@@ -555,6 +566,46 @@ mod tests {
 
         // Ready is emitted exactly once — a redundant ready is a no-op.
         assert!(emitted(&fsm.on_input(Input::Backend(progress(PHASE_READY)))).is_empty());
+    }
+
+    #[test]
+    fn a_progress_warning_reaches_the_ui_headlined_by_its_code() {
+        let mut fsm = Fsm::new();
+        let ready = Progress {
+            warning: Some("The NVIDIA GPU could not be used".into()),
+            warning_code: Some(myna_core::WARNING_GPU_UNAVAILABLE.into()),
+            ..Progress::phase(PHASE_READY)
+        };
+        assert_eq!(
+            emitted(&fsm.on_input(Input::Backend(TranscriptionEvent::Progress(ready)))),
+            vec![
+                OrchestratorEvent::Ready,
+                OrchestratorEvent::Warning {
+                    code: Some(myna_core::WARNING_GPU_UNAVAILABLE.into()),
+                    notice: Failure::new(
+                        "Using the CPU: GPU unavailable",
+                        "The NVIDIA GPU could not be used"
+                    ),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_warning_without_a_known_code_is_shown_as_the_server_wrote_it() {
+        let mut fsm = Fsm::new();
+        let progress = Progress {
+            warning: Some("Something is slow".into()),
+            ..Progress::phase(PHASE_TRANSCRIBING)
+        };
+        let events = emitted(&fsm.on_input(Input::Backend(TranscriptionEvent::Progress(progress))));
+        assert_eq!(
+            events.last(),
+            Some(&OrchestratorEvent::Warning {
+                code: None,
+                notice: Failure::new("Something is slow", "Something is slow"),
+            })
+        );
     }
 
     #[test]

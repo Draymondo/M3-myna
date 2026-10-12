@@ -168,30 +168,25 @@ fn decode_frame(value: &Value, after_commit: bool) -> Vec<TranscriptionEvent> {
                 Some("ready") => PHASE_READY,
                 _ => PHASE_TRANSCRIBING,
             };
-            let snippet = value
-                .get("snippet")
-                .and_then(Value::as_str)
-                .map(String::from);
+            let text = |key| value.get(key).and_then(Value::as_str).map(String::from);
             vec![TranscriptionEvent::Progress(Progress {
-                snippet,
+                snippet: text("snippet"),
                 phase: phase.to_string(),
+                warning: text("warning"),
+                warning_code: text("warning_code"),
             })]
         }
         // canonical/whisper-snap adapter: model.loaded ≈ our STATUS{ready}
         Some(MODEL_LOADED) => {
-            vec![TranscriptionEvent::Progress(Progress {
-                snippet: None,
-                phase: PHASE_READY.to_string(),
-            })]
+            vec![TranscriptionEvent::Progress(Progress::phase(PHASE_READY))]
         }
         // canonical/whisper-snap adapter: model.unloaded ≈ our STATUS{loading}
         // (their SetConfig unconditionally reloads the backend — closes the gate
         // until the new connection's model.loaded arrives)
         Some(MODEL_UNLOADED) => {
-            vec![TranscriptionEvent::Progress(Progress {
-                snippet: None,
-                phase: PHASE_PREPARING.to_string(),
-            })]
+            vec![TranscriptionEvent::Progress(Progress::phase(
+                PHASE_PREPARING,
+            ))]
         }
         Some(TRANSCRIPTION_DELTA) => {
             // Committed, append-only segment text — the IE115 face of
@@ -331,6 +326,18 @@ mod tests {
         );
         let ready = decode_frame(&json!({"type": "status", "state": "ready"}), false);
         assert!(matches!(&ready[0], TranscriptionEvent::Progress(p) if p.phase == PHASE_READY));
+    }
+
+    #[test]
+    fn decoder_keeps_a_status_warning_and_its_code() {
+        let frame = json!({"type": "status", "state": "ready",
+            "warning": "no GPU", "warning_code": "gpu_unavailable"});
+        let [TranscriptionEvent::Progress(p)] = &decode_frame(&frame, false)[..] else {
+            panic!("one progress event")
+        };
+        assert_eq!(p.phase, PHASE_READY);
+        assert_eq!(p.warning.as_deref(), Some("no GPU"));
+        assert_eq!(p.warning_code.as_deref(), Some("gpu_unavailable"));
     }
 
     #[test]

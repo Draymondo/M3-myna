@@ -78,20 +78,30 @@ pub struct Segment {
 
 /// `transcription.progress` payload — lightweight liveness. `snippet` is
 /// unstable UI-animation text with no accuracy or retraction guarantee.
+/// `warning` is a non-terminal condition in the server's English, and
+/// `warning_code` names it ([`WARNING_GPU_UNAVAILABLE`],
+/// [`WARNING_MEMORY_PRESSURE`]) so the client can word it in the user's
+/// language.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Progress {
     #[serde(default)]
     pub snippet: Option<String>,
     #[serde(default = "default_phase")]
     pub phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning_code: Option<String>,
 }
+
+/// A GPU engine is serving on the CPU: its driver could not be loaded.
+pub const WARNING_GPU_UNAVAILABLE: &str = "gpu_unavailable";
+/// Decoding is thrashing for want of memory, not failing.
+pub const WARNING_MEMORY_PRESSURE: &str = "memory_pressure";
 
 impl Default for Progress {
     fn default() -> Self {
-        Self {
-            snippet: None,
-            phase: default_phase(),
-        }
+        Self::phase(default_phase())
     }
 }
 
@@ -101,6 +111,16 @@ impl Progress {
         Self {
             snippet: None,
             phase: phase.into(),
+            warning: None,
+            warning_code: None,
+        }
+    }
+
+    /// A liveness ping in `phase` carrying unstable `snippet` text.
+    pub fn snippet(phase: impl Into<String>, snippet: impl Into<String>) -> Self {
+        Self {
+            snippet: Some(snippet.into()),
+            ..Self::phase(phase)
         }
     }
 }
@@ -246,11 +266,27 @@ mod tests {
     #[test]
     fn progress_with_snippet_preparing() {
         assert_wire(
-            &TranscriptionEvent::Progress(Progress {
-                snippet: Some("the quick".into()),
-                phase: PHASE_PREPARING.into(),
-            }),
+            &TranscriptionEvent::Progress(Progress::snippet(PHASE_PREPARING, "the quick")),
             r#"{"event": "transcription.progress", "data": {"snippet": "the quick", "phase": "preparing"}}"#,
+        );
+    }
+
+    #[test]
+    fn progress_decodes_a_warning_and_its_code() {
+        let wire: Value = serde_json::from_str(
+            r#"{"event": "transcription.progress", "data": {"phase": "ready",
+                "warning": "no GPU", "warning_code": "gpu_unavailable"}}"#,
+        )
+        .unwrap();
+        let Some(TranscriptionEvent::Progress(progress)) =
+            TranscriptionEvent::from_wire(&wire).unwrap()
+        else {
+            panic!("not progress")
+        };
+        assert_eq!(progress.warning.as_deref(), Some("no GPU"));
+        assert_eq!(
+            progress.warning_code.as_deref(),
+            Some(WARNING_GPU_UNAVAILABLE)
         );
     }
 
