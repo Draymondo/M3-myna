@@ -1,3 +1,15 @@
+myna-config (0.2.3-0ubuntu1) stonking; urgency=medium
+
+  * On an NVIDIA machine whose driver Myna cannot use, setup picks the
+    CPU engine instead of the GPU one (#49).
+  * A GPU engine that loses its driver keeps transcribing on the CPU and
+    says so, instead of failing every dictation.
+  * Myna tells you when dictation is slowed by low memory.
+  * Report an Issue includes each model's engine and status even when
+    Diagnostics was never opened.
+
+ -- Charles <charles05@canonical.com>  Mon, 12 Oct 2026 21:24:49 +0100
+
 myna-config (0.2.2-0ubuntu1) stonking; urgency=medium
 
   * Xubuntu support: Myna Settings sets up IBus and the dictation
