@@ -1987,18 +1987,42 @@ impl BackendUi {
     /// Opens a new GitHub issue with the diagnostics already in it, so the
     /// user only has to say what went wrong. A report too long for the URL
     /// goes through the clipboard whole, never shortened.
+    /// The Diagnostics report as it stands now: the host and every backend
+    /// read afresh, since the user may never have opened Diagnostics, whose
+    /// tab is otherwise the only reader of the backends.
+    async fn report_text(self: &Rc<Self>) -> String {
+        if let Ok(host) = gio::spawn_blocking(host_facts).await {
+            *self.host.borrow_mut() = Some(host);
+        }
+        if let Some(repository) = self.controller.repository().cloned() {
+            for page in self.controller.pages() {
+                let snap = page.identity().snap_name();
+                let Some(request) = self.controller.begin_snapshot(snap) else {
+                    continue;
+                };
+                let token = request.token();
+                let snapshot = repository
+                    .read_snapshot(page.identity(), token.clone())
+                    .await;
+                if !token.is_cancelled() {
+                    self.controller.complete_snapshot(request, snapshot);
+                }
+            }
+        }
+        present_diagnostics(self.diagnostic_input()).copy_text()
+    }
+
     fn report_issue(self: &Rc<Self>, window: &ui::MainWindow) {
         let ui = Rc::downgrade(self);
         let window = window.downgrade();
         glib::spawn_future_local(async move {
-            let host = gio::spawn_blocking(host_facts).await.ok();
-            let (Some(ui), Some(window)) = (ui.upgrade(), window.upgrade()) else {
+            let Some(ui) = ui.upgrade() else {
                 return;
             };
-            if host.is_some() {
-                *ui.host.borrow_mut() = host;
-            }
-            let text = present_diagnostics(ui.diagnostic_input()).copy_text();
+            let text = ui.report_text().await;
+            let Some(window) = window.upgrade() else {
+                return;
+            };
             let url = diagnostics::issue_url(&text).unwrap_or_else(|| {
                 window.clipboard().set_text(&text);
                 ui.overlay.add_toast(adw::Toast::new(&gettextrs::gettext(
@@ -4637,7 +4661,14 @@ mod tests {
             backend: &BackendIdentity,
             _cancellation: CancellationToken,
         ) -> crate::domain::BackendSnapshot {
-            crate::domain::BackendSnapshot::empty(backend.clone())
+            let mut snapshot = crate::domain::BackendSnapshot::empty(backend.clone());
+            snapshot.set_engines(
+                crate::domain::parse_engine_options(include_str!(
+                    "../tests/fixtures/modelctl-list-engines.json"
+                ))
+                .expect("fixture parses"),
+            );
+            snapshot
         }
 
         async fn refresh(
@@ -4647,6 +4678,30 @@ mod tests {
             self.reads.set(self.reads.get() + 1);
             Ok(wired(*self.machine.borrow()))
         }
+    }
+
+    /// #49: Report an Issue from General, Diagnostics never opened, said
+    /// "Engine none selected" for a backend serving on its GPU engine, because
+    /// only the Diagnostics tab read the backends' snapshots.
+    #[test]
+    fn a_report_reads_the_backends_it_describes() {
+        on_gtk_thread(|| {
+            let (ui, _repository, _window) = refocusable_ui();
+            assert!(
+                ui.controller
+                    .page("myna-parakeet")
+                    .is_some_and(|page| page.snapshot().is_none()),
+                "precondition: nothing has read the backend yet"
+            );
+
+            let text = glib::MainContext::default().block_on(ui.report_text());
+
+            let engine = text
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("Engine"))
+                .map(str::trim);
+            assert_eq!(engine, Some("cpu"), "{text}");
+        });
     }
 
     /// General over a Parakeet-only machine the test can change, with the

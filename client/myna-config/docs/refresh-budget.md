@@ -9,6 +9,7 @@ The configuration UI is **event-driven**. A refresh cycle may spawn at most:
 | Window regains focus       | as Startup, at most once per `FOCUS_REDISCOVERY_INTERVAL` (2 s) |
 | Backend selected           | `BACKEND_REFRESH_PROCESS_BUDGET` (9 = `snap info` + at most 4 prioritized app probes + 4 modelctl reads) |
 | Diagnostics requested (n backends) | n * `BACKEND_REFRESH_PROCESS_BUDGET`, plus the Startup reads |
+| Report an Issue (n backends) | n * `BACKEND_REFRESH_PROCESS_BUDGET`: the report describes every backend, and the Diagnostics tab may never have read them |
 | Apply running              | `0`, plus one snapd socket read per `APPLY_PROGRESS_INTERVAL` (1 s) |
 
 Startup additionally pays one startup-sized assessment before any window
