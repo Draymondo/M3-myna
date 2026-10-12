@@ -14,10 +14,6 @@ rm -f "$snap_dir"/wheels/myna-*.whl
 uv build --wheel --out-dir "$snap_dir/wheels"
 ls -l "$snap_dir/wheels"
 
-# The myna wheel is linked in too: craft rebuilds a part only when its own
-# source changes, and a wheel read from outside it left the component packing
-# the previous build's server code.
-#
 # The CUDA stack is 1.5 GB of wheels. They are kept in one cache shared by every
 # checkout and hardlinked in, so a new worktree does not download them again,
 # and the part installs them with --no-index. `pip download` reuses a file
@@ -30,8 +26,7 @@ target=(--only-binary=:all: --python-version 3.12 --implementation cp --abi cp31
     --platform manylinux_2_28_x86_64 --platform manylinux_2_27_x86_64
     --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64
     --platform manylinux_2_12_x86_64)
-wanted=(--requirement "$snap_dir/runtimes/onnxruntime-cuda/requirements.txt"
-    "$snap_dir"/wheels/myna-*.whl)
+wanted=(--no-deps --requirement "$snap_dir/runtimes/onnxruntime-cuda/requirements.txt")
 mkdir -p "$wheels"
 python3 -m pip download --quiet --dest "$wheels" "${target[@]}" "${wanted[@]}"
 # Resolve the closure offline against the cache, then link exactly that.

@@ -1,0 +1,11 @@
+# The gpu-nvidia component's stack, installed with --no-deps: what the base
+# venv lacks for the GPU engine, and nothing else. ctranslate2 is not here: the
+# PyPI wheel the base ships is the CUDA build, and only needs cuBLAS at
+# runtime. onnxruntime (with protobuf and flatbuffers, which the base prunes)
+# runs faster-whisper's Silero VAD, which the large models' batch policy turns
+# on. Pinned to what the component shipped in 0.2.3.
+onnxruntime==1.30.0
+protobuf==7.36.2
+flatbuffers==25.12.19
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cuda-nvrtc-cu12==12.9.86

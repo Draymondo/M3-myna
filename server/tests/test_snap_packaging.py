@@ -919,3 +919,34 @@ def test_every_component_is_attributed_in_the_notice(snap) -> None:
     notice = notice_path.read_text(encoding="utf-8")
     for component in recipe.get("components") or {}:
         assert component in notice, f"{name}: component {component!r} is not attributed in NOTICE"
+
+
+def _component_parts(recipe: dict, component: str) -> dict[str, dict]:
+    marker = f"(component/{component})"
+    return {
+        name: part
+        for name, part in (recipe.get("parts") or {}).items()
+        if any(marker in str(dest) for dest in (part.get("organize") or {}).values())
+    }
+
+
+@pytest.mark.parametrize("snap_dir", MULTI_ENGINE_SNAPS)
+def test_the_gpu_component_carries_no_server_code(snap_dir: str) -> None:
+    """myna lives in the base venv only. A copy in gpu-nvidia made every server
+    fix a new 1.5 GB component, and the copy could drift from the base's."""
+    parts = _component_parts(_recipe(snap_dir), "gpu-nvidia")
+    assert parts, f"{INFERENCE_SNAPS[snap_dir]}: no part organizes into gpu-nvidia"
+    for name, part in parts.items():
+        build = part.get("override-build", "")
+        assert "myna-0.0.0" not in build, f"{name} installs the myna wheel into gpu-nvidia"
+        assert "--no-deps" in build, f"{name} lets pip pull the base's dependencies in again"
+
+
+@pytest.mark.parametrize("snap_dir", MULTI_ENGINE_SNAPS)
+def test_the_gpu_engine_runs_the_venv_interpreter(snap_dir: str) -> None:
+    """The server module comes from the venv, so the engine must run the venv's
+    python, not whichever python3 PATH finds first."""
+    server = (REPO_ROOT / snap_dir / "engines" / "nvidia-gpu" / "server").read_text(
+        encoding="utf-8"
+    )
+    assert 'exec "$SNAP/bin/python3" -m myna.server' in server

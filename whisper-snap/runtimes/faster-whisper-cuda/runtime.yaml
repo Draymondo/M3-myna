@@ -1,15 +1,13 @@
 # faster-whisper (CUDA CTranslate2) serving the Myna session API.
 #
-# Unlike the cpu runtime (whose venv is baked into the base snap), the GPU
-# stack ships as a component: the `faster-whisper-cuda` part installs
-# myna[whisper] + ctranslate2 + the NVIDIA cuBLAS/cuDNN pip libraries under
-# `site-packages/`. We expose them via
-# PYTHONPATH + LD_LIBRARY_PATH rather than a relocatable venv (the base snap's
-# python3.12 runs the module — see engines/nvidia-gpu/server).
+# The cpu runtime is the base snap's venv, whose ctranslate2 wheel is already
+# the CUDA build. The component adds what that venv lacks on a GPU: the NVIDIA
+# cuBLAS/NVRTC pip libraries, and onnxruntime for the large models' VAD
+# (requirements.txt), under `site-packages/`, ahead of the venv on PYTHONPATH.
 #
-# NOTE: the python3.12 path below tracks the core24 base; revisit if the base
-# changes. The nvidia-*-cu12 wheels lay their .so files out under
-# site-packages/nvidia/<lib>/lib — CTranslate2 needs both on LD_LIBRARY_PATH.
+# The nvidia-*-cu12 wheels lay their .so files out under
+# site-packages/nvidia/<lib>/lib; CTranslate2 dlopens cuBLAS from
+# LD_LIBRARY_PATH, and cuBLAS finds NVRTC itself.
 name: faster-whisper-cuda
 
 servers:
@@ -20,7 +18,6 @@ servers:
 environment:
   - PYTHONPATH=$SNAP_COMPONENTS/gpu-nvidia/site-packages
   - LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$SNAP_COMPONENTS/gpu-nvidia/site-packages/nvidia/cublas/lib
-  - LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$SNAP_COMPONENTS/gpu-nvidia/site-packages/nvidia/cudnn/lib
 
 components:
   - gpu-nvidia

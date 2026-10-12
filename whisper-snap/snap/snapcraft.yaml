@@ -187,8 +187,13 @@ parts:
   # cuDNN pip libs under site-packages/. Exposed via PYTHONPATH + LD_LIBRARY_PATH
   # (see runtimes/faster-whisper-cuda/runtime.yaml), run by the base python3.
   # amd64-only.
+  # What the base venv lacks for the GPU engine (runtimes/faster-whisper-cuda/
+  # requirements.txt), first on PYTHONPATH; myna, faster-whisper and
+  # ctranslate2 come from the base, so a server fix never changes this
+  # component.
   faster-whisper-cuda:
     plugin: nil
+    after: [server-app]
     # Persistent pip cache: the build VM is thrown away each run, but the
     # project dir is bind-mounted, so this survives. Not find-links, which
     # loses to the index whenever the version ties.
@@ -209,18 +214,18 @@ parts:
       # No nvidia-cudnn-cu12: CTranslate2 4.8's CUDA backend is cuBLAS-only.
       # It carries no DT_NEEDED, no dlopen name and not one "cudnn" string,
       # and the wheel declares no CUDA deps at all. cuBLAS pulls NVRTC itself.
-      pip3 install --target="$target" \
-        ./myna-0.0.0-py3-none-any.whl[whisper] \
-        ctranslate2 \
-        nvidia-cublas-cu12
-      # onnxruntime stays: the large models' batch policy sets vad_filter
-      # (models/*/model.yaml MODEL_BATCH_VAD_FILTER) and faster-whisper runs
-      # its bundled Silero VAD on onnxruntime, lazily from vad.py. The gate
-      # loads that model - the exact lazy path a vad batch decode hits on
-      # first use - so a pruned-too-far build fails here, not on dictation.
+      pip3 install --target="$target" --no-deps \
+        --requirement "$CRAFT_PROJECT_DIR/runtimes/faster-whisper-cuda/requirements.txt"
+      # onnxruntime is here for the large models' batch policy, which sets
+      # vad_filter (models/*/model.yaml MODEL_BATCH_VAD_FILTER): faster-whisper
+      # runs its bundled Silero VAD on onnxruntime, lazily from vad.py. The gate
+      # imports as the engine does, this component then the base, and loads
+      # that model - the exact lazy path a vad batch decode hits on first use -
+      # so a pruned-too-far build fails here, not on dictation.
       export PRUNE_DROP=""
-      export PRUNE_GATE="from faster_whisper.vad import get_vad_model; get_vad_model()"
-      "$CRAFT_PROJECT_DIR/dev/prune-runtime.sh" "$target" python3
+      export PRUNE_GATE="import os, myna, onnxruntime; from faster_whisper.vad import get_vad_model; get_vad_model(); assert onnxruntime.__file__.startswith('$target' + os.sep); assert not myna.__file__.startswith('$target' + os.sep)"
+      PYTHONPATH="$(echo "$CRAFT_STAGE"/lib/python3.*/site-packages)" \
+        "$CRAFT_PROJECT_DIR/dev/prune-runtime.sh" "$target" python3
       nvidia="$target/nvidia"
       # The .alt NVRTC is a second codegen build nothing here dlopens - the
       # only binary naming it is itself. libnvrtc.so.12 stays; cuBLASLt JITs
@@ -230,7 +235,7 @@ parts:
       # A LD_PRELOAD BLAS interposer for unmodified Fortran binaries, and
       # headers for compiling against the stack. Neither has a runtime caller.
       rm -f "$nvidia"/cublas/lib/libnvblas.so.*
-      rm -rf "$nvidia"/*/include
+      rm -rf "$nvidia"/*/include "$target"/bin
       craftctl default
     organize:
       "*": (component/gpu-nvidia)

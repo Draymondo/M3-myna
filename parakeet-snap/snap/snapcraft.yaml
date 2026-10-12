@@ -190,13 +190,14 @@ parts:
     prime:
       - -*
 
-  # CUDA runtime as a component: the myna wheel's parakeet runtime with
-  # onnxruntime-gpu in place of onnxruntime, and the NVIDIA CUDA 13 and cuDNN 9
-  # pip libraries, under site-packages/. Exposed through PYTHONPATH and
-  # LD_LIBRARY_PATH (runtimes/onnxruntime-cuda/runtime.yaml) and run by the
-  # base python3.
+  # CUDA runtime as a component: onnxruntime-gpu and the NVIDIA CUDA 13 and
+  # cuDNN 9 pip libraries, under site-packages/, and nothing else. First on
+  # PYTHONPATH (runtimes/onnxruntime-cuda/runtime.yaml), its onnxruntime
+  # shadows the base venv's CPU build; myna and every other dependency come
+  # from the base, so a server fix never changes this 1.5 GB component.
   onnxruntime-cuda:
     plugin: nil
+    after: [server-app]
     # Offline from the wheelhouse dev/prepare.sh resolves: the exact closure of
     # the pins, hardlinked from a cache every checkout shares.
     source: wheelhouse-cuda
@@ -208,10 +209,9 @@ parts:
       [ "$CRAFT_ARCH_BUILD_FOR" = amd64 ] || exit 0
       target="$CRAFT_PART_INSTALL/site-packages"
       mkdir -p "$target"
-      # The wheel with no extra: its parakeet extra is the CPU onnxruntime,
-      # which installs the same `onnxruntime` package over the GPU one.
-      pip3 install --target="$target" --no-index --find-links=. \
-        ./myna-0.0.0-py3-none-any.whl \
+      # --no-deps: onnxruntime-gpu's Python dependencies are the CPU build's,
+      # which the base venv already ships.
+      pip3 install --target="$target" --no-index --find-links=. --no-deps \
         --requirement "$CRAFT_PROJECT_DIR/runtimes/onnxruntime-cuda/requirements.txt"
       nvidia="$target/nvidia"
       # TensorRT's provider needs libnvinfer, which is not shipped; nvblas is
@@ -221,9 +221,11 @@ parts:
       rm -rf "$nvidia"/*/include "$target"/bin
       # The library path runtimes/onnxruntime-cuda/runtime.yaml sets: the
       # pybind module itself links libcudart, so the import proves it too.
+      # The gate imports as the engine does: this component, then the base.
       export LD_LIBRARY_PATH="$nvidia/cu13/lib:$nvidia/cudnn/lib"
-      export PRUNE_GATE="import onnxruntime, numpy; assert 'CUDAExecutionProvider' in onnxruntime.get_available_providers()"
-      "$CRAFT_PROJECT_DIR/dev/prune-runtime.sh" "$target" python3
+      export PRUNE_GATE="import onnxruntime, myna.testbed.parakeet, os; assert 'CUDAExecutionProvider' in onnxruntime.get_available_providers(); assert onnxruntime.__file__.startswith('$target' + os.sep); assert not myna.__file__.startswith('$target' + os.sep)"
+      PYTHONPATH="$(echo "$CRAFT_STAGE"/lib/python3.*/site-packages)" \
+        "$CRAFT_PROJECT_DIR/dev/prune-runtime.sh" "$target" python3
       unset LD_LIBRARY_PATH
       # The provider is dlopened, so a missing CUDA library only shows on a
       # user's GPU. Every library it needs must be in this component, except

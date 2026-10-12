@@ -1,9 +1,8 @@
 #!/bin/bash -eu
 
-# The gpu-nvidia component puts myna + onnxruntime-gpu on
-# PYTHONPATH and the CUDA libraries on LD_LIBRARY_PATH
-# (runtimes/onnxruntime-cuda/runtime.yaml). The base python3 runs it rather
-# than the snap's venv, whose CPU onnxruntime would otherwise be imported.
+# The gpu-nvidia component puts onnxruntime-gpu first on PYTHONPATH, ahead of
+# the venv's CPU onnxruntime, and the CUDA libraries on LD_LIBRARY_PATH
+# (runtimes/onnxruntime-cuda/runtime.yaml). myna runs from the venv, as on cpu.
 
 socket_path="$(modelctl get ws.unix-socket)"
 idle="$(modelctl get sleep-idle-seconds)"
@@ -21,7 +20,7 @@ streaming="$(modelctl get streaming 2>/dev/null || true)"
 stream_args=()
 [ "${streaming:-false}" = "true" ] && stream_args=(--streaming)
 
-exec python3 -m myna.server \
+exec "$SNAP/bin/python3" -m myna.server \
     --socket "$socket_path" \
     --share-provider \
     --adapter parakeet \
