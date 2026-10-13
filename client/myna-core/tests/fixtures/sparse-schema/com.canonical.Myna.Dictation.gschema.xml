@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  An older com.canonical.Myna.Dictation, holding only `language`: what a
+  binary newer than the installed schema meets (myna-core/build.rs).
+-->
+<schemalist>
+  <schema id="com.canonical.Myna.Dictation" path="/com/canonical/myna/dictation/">
+    <key name="language" type="s">
+      <default>''</default>
+    </key>
+  </schema>
+</schemalist>

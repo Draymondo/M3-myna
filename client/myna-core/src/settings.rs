@@ -165,23 +165,30 @@ impl Settings {
 
     /// Read every key out of an open store. One reader, so [`load`](Self::load)
     /// at startup and [`watch`] on every change cannot answer differently.
+    /// A key the installed schema lacks reads its default here.
     fn from_store(store: &Store) -> Self {
+        let default = Self::default();
         Self {
             streaming_mode: store.streaming_mode(),
             language: store.text(KEY_LANGUAGE),
             hud_style: store.text(KEY_HUD_STYLE),
-            silence_timeout: store.seconds(KEY_SILENCE_TIMEOUT),
-            sounds: store.flag(KEY_SOUNDS),
+            silence_timeout: store
+                .seconds(KEY_SILENCE_TIMEOUT)
+                .unwrap_or(default.silence_timeout),
+            sounds: store.flag(KEY_SOUNDS).unwrap_or(default.sounds),
             sound_set: store
                 .text(KEY_SOUND_SET)
                 .as_deref()
                 .and_then(SoundSet::from_nick)
-                .unwrap_or_default(),
+                .unwrap_or(default.sound_set),
         }
     }
 }
 
 /// A live handle on the settings store.
+///
+/// Every read answers `None` for a key the installed schema lacks, where GLib
+/// would abort: a binary can be newer than the schema it runs against.
 ///
 /// Deliberately not `Send`: `gio::Settings` is a GObject bound to the thread
 /// that made it. Read it where you need it (both binaries do so once, at
@@ -218,6 +225,7 @@ impl Store {
     /// written value equal to the schema default is still a choice, and a
     /// value outside the schema enum (the retired `auto`) is none.
     pub fn streaming_mode(&self) -> Option<StreamingMode> {
+        self.has(KEY_STREAMING_MODE)?;
         self.settings
             .user_value(KEY_STREAMING_MODE)?
             .str()
@@ -228,17 +236,25 @@ impl Store {
     /// in a settings UI writes `""`, and that has to mean the same as never
     /// having set it.
     pub fn text(&self, key: &str) -> Option<String> {
+        self.has(key)?;
         let value = self.settings.string(key).to_string();
         (!value.is_empty()).then_some(value)
     }
 
     /// An unsigned-seconds key. The schema bounds it; nothing to interpret.
-    pub fn seconds(&self, key: &str) -> u32 {
-        self.settings.uint(key)
+    pub fn seconds(&self, key: &str) -> Option<u32> {
+        self.has(key).map(|()| self.settings.uint(key))
     }
 
-    pub fn flag(&self, key: &str) -> bool {
-        self.settings.boolean(key)
+    pub fn flag(&self, key: &str) -> Option<bool> {
+        self.has(key).map(|()| self.settings.boolean(key))
+    }
+
+    fn has(&self, key: &str) -> Option<()> {
+        self.settings
+            .settings_schema()
+            .is_some_and(|schema| schema.has_key(key))
+            .then_some(())
     }
 }
 
@@ -510,7 +526,7 @@ mod tests {
         let store = test_store();
         assert_eq!(
             store.seconds(KEY_SILENCE_TIMEOUT),
-            DEFAULT_SILENCE_TIMEOUT_SECS
+            Some(DEFAULT_SILENCE_TIMEOUT_SECS)
         );
         assert_eq!(
             Settings::from_store(&store).silence_timeout,
@@ -650,6 +666,37 @@ mod tests {
         let source = gio::SettingsSchemaSource::from_directory(&empty, None, true);
         assert!(source.is_err() || source.unwrap().lookup(SCHEMA_ID, true).is_none());
         std::fs::remove_dir_all(&empty).ok();
+    }
+
+    /// A binary newer than the installed schema asks for keys it lacks, and
+    /// GLib aborts on any such read. Each missing key reads its default; a key
+    /// the schema has still reads the store.
+    #[test]
+    fn a_key_the_installed_schema_lacks_reads_the_default() {
+        let schema = gio::SettingsSchemaSource::from_directory(
+            std::path::Path::new(env!("MYNA_SPARSE_SCHEMA_DIR")),
+            None,
+            true,
+        )
+        .expect("compiled sparse schema (build.rs)")
+        .lookup(SCHEMA_ID, true)
+        .expect("the sparse schema declares SCHEMA_ID");
+        let store = Store {
+            settings: gio::Settings::new_full(
+                &schema,
+                Some(&gio::functions::memory_settings_backend_new()),
+                None,
+            ),
+        };
+        store.settings.set_string(KEY_LANGUAGE, "pt").unwrap();
+
+        assert_eq!(
+            Settings::from_store(&store),
+            Settings {
+                language: Some("pt".into()),
+                ..Settings::default()
+            }
+        );
     }
 
     /// The point of the watch: a value written by *another* holder of the same
