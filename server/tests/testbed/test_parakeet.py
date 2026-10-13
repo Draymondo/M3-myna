@@ -821,14 +821,66 @@ def test_cuda_init_serves_on_the_cpu_when_the_cuda_provider_cannot_load(tmp_path
     assert model._encoder_run_options is None
 
 
+class _OrtFail(Exception):
+    """onnxruntime_pybind11_state.Fail: derives from Exception alone."""
+
+
+class _PascalSession(_FakeSession):
+    """An InferenceSession on a GPU CUDA 13 has no kernels for (#56): the CUDA
+    provider loads, then cublasCreate fails and session creation throws."""
+
+    def __init__(self, path, options, providers):
+        if CUDA_PROVIDER in providers:
+            raise _OrtFail(
+                "[ONNXRuntimeError] : 1 : FAIL : Exception during initialization: "
+                "CUBLAS failure 8: the function requires an architectural feature "
+                "absent from the device ; expr=cublasCreate(&cublas_handle_);"
+            )
+        super().__init__(path, options, providers)
+
+
+def test_cuda_init_serves_on_the_cpu_when_the_cuda_provider_throws(tmp_path, monkeypatch):
+    """#56: a GTX 1050 failed every session at the encoder's creation."""
+    _touch(tmp_path, FP32_ENCODER_FILE, FP32_JOINT_FILE)
+    (tmp_path / "vocab.txt").write_text("<blk> 0\n", encoding="utf-8")
+    _fake_ort(monkeypatch, _PascalSession)
+
+    model = _ParakeetOnnx(str(tmp_path), device="cuda", encoder_threads=3)
+
+    assert model.gpu_unavailable
+    assert model._encoder.options.intra_op_num_threads == 3
+    assert model.device == "cpu"
+    assert model._encoder.requested_providers == ["CPUExecutionProvider"]
+    assert model._decoder_joint.requested_providers == ["CPUExecutionProvider"]
+    assert model._encoder_run_options is None
+
+
+def test_an_encoder_that_fails_on_the_cpu_too_is_not_a_gpu_fault(tmp_path, monkeypatch):
+    """A broken export must fail the load, not be served as a GPU fallback."""
+
+    class _BrokenEncoder(_FakeSession):
+        def __init__(self, path, options, providers):
+            if path.endswith(FP32_ENCODER_FILE):
+                raise _OrtFail("[ONNXRuntimeError] : 7 : INVALID_PROTOBUF")
+            super().__init__(path, options, providers)
+
+    _touch(tmp_path, FP32_ENCODER_FILE, FP32_JOINT_FILE)
+    (tmp_path / "vocab.txt").write_text("<blk> 0\n", encoding="utf-8")
+    _fake_ort(monkeypatch, _BrokenEncoder)
+
+    with pytest.raises(_OrtFail, match="INVALID_PROTOBUF"):
+        _ParakeetOnnx(str(tmp_path), device="cuda")
+
+
 def test_a_loaded_cuda_provider_is_not_reported_unavailable(tmp_path, monkeypatch):
     _touch(tmp_path, FP32_ENCODER_FILE, FP32_JOINT_FILE)
     (tmp_path / "vocab.txt").write_text("<blk> 0\n", encoding="utf-8")
     _fake_ort(monkeypatch, _FakeSession)
 
-    model = _ParakeetOnnx(str(tmp_path), device="cuda")
+    model = _ParakeetOnnx(str(tmp_path), device="cuda", encoder_threads=3)
 
     assert not model.gpu_unavailable
+    assert model._encoder.options.intra_op_num_threads == 3
     assert model.device == "cuda"
 
 

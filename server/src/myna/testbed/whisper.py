@@ -24,6 +24,7 @@ to pin a lab cache; verify offline runs with ``HF_HUB_OFFLINE=1``.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import re
@@ -377,14 +378,20 @@ class FasterWhisperAdapter:
                     device, compute_type = "cpu", "default"
                 else:
                     self._check_compute_type()
-                # blocking download + load: keep it off the event loop
-                model = await asyncio.to_thread(
-                    WhisperModel,
-                    self._model_size,
-                    device=device,
-                    compute_type=compute_type,
-                    download_root=self._download_root,
+                load = functools.partial(
+                    WhisperModel, self._model_size, download_root=self._download_root
                 )
+                # blocking download + load: keep it off the event loop
+                try:
+                    model = await asyncio.to_thread(load, device=device, compute_type=compute_type)
+                except Exception:
+                    # A device it counts can still fail to start (#56). A
+                    # broken model fails on the CPU again, and raises.
+                    if device != "cuda":
+                        raise
+                    _log.exception("whisper: CUDA failed to start; serving on the CPU")
+                    device, compute_type = "cpu", "default"
+                    model = await asyncio.to_thread(load, device=device, compute_type=compute_type)
                 self._model = model
                 self._serving_device = device
                 _log.info(

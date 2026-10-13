@@ -137,9 +137,14 @@ class _RecordingWhisperModel:
     """faster_whisper.WhisperModel, recording where it was asked to load."""
 
     loads: list[tuple[str, str]] = []
+    sources: list[tuple[str, str | None]] = []
+    fails_on: tuple[str, ...] = ()
 
     def __init__(self, model_size, *, device, compute_type, download_root):
         self.loads.append((device, compute_type))
+        self.sources.append((model_size, download_root))
+        if device in self.fails_on:
+            raise RuntimeError(f"failed on {device}")
         self.model = type("CT2", (), {"compute_type": compute_type})()
 
     def transcribe(self, samples, **kwargs):
@@ -159,6 +164,8 @@ def _fake_whisper_stack(monkeypatch, cuda_devices):
     )
     monkeypatch.setitem(sys.modules, "ctranslate2", module)
     _RecordingWhisperModel.loads = []
+    _RecordingWhisperModel.sources = []
+    _RecordingWhisperModel.fails_on = ()
     monkeypatch.setitem(
         sys.modules, "faster_whisper", type("F", (), {"WhisperModel": _RecordingWhisperModel})
     )
@@ -175,6 +182,41 @@ def test_a_cuda_engine_without_a_usable_gpu_loads_on_the_cpu(monkeypatch):
 
     assert _RecordingWhisperModel.loads == [("cpu", "default")]
     assert adapter.capabilities().runtime["device"] == "cpu"
+
+
+def test_a_gpu_ctranslate2_cannot_start_on_loads_on_the_cpu(monkeypatch):
+    """CTranslate2 counts a device it then fails to run on (#56): construction
+    throws. Serve on the CPU in its own type."""
+    _fake_whisper_stack(monkeypatch, cuda_devices=1)
+    _RecordingWhisperModel.fails_on = ("cuda",)
+    adapter = FasterWhisperAdapter(
+        "small", device="cuda", compute_type="float16", download_root="/models"
+    )
+
+    asyncio.run(adapter._load_model())
+
+    assert _RecordingWhisperModel.loads == [("cuda", "float16"), ("cpu", "default")]
+    assert _RecordingWhisperModel.sources == [("small", "/models")] * 2
+    assert adapter.capabilities().runtime["device"] == "cpu"
+
+
+def test_a_model_that_fails_on_the_cpu_too_is_not_a_gpu_fault(monkeypatch):
+    _fake_whisper_stack(monkeypatch, cuda_devices=1)
+    _RecordingWhisperModel.fails_on = ("cuda", "cpu")
+    adapter = FasterWhisperAdapter("small", device="cuda", compute_type="float16")
+
+    with pytest.raises(RuntimeError, match="failed on cpu"):
+        asyncio.run(adapter._load_model())
+
+
+def test_a_cpu_engine_load_failure_is_not_retried(monkeypatch):
+    _fake_whisper_stack(monkeypatch, cuda_devices=0)
+    _RecordingWhisperModel.fails_on = ("cpu",)
+    adapter = FasterWhisperAdapter("small", device="cpu", compute_type="float32")
+
+    with pytest.raises(RuntimeError, match="failed on cpu"):
+        asyncio.run(adapter._load_model())
+    assert len(_RecordingWhisperModel.loads) == 1
 
 
 def test_a_usable_gpu_loads_as_asked(monkeypatch):

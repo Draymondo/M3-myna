@@ -474,7 +474,16 @@ class _ParakeetOnnx:
         )
         encoder_opts = opts(encoder_threads or _encoder_threads())
         _log.info("parakeet encoder: %s on %s", files.precision, device)
-        self._encoder = ort.InferenceSession(files.encoder, encoder_opts, providers=providers)
+        try:
+            self._encoder = ort.InferenceSession(files.encoder, encoder_opts, providers=providers)
+        except Exception:
+            # A provider that loads can still fail to start: CUDA 13 has no
+            # kernels for a Pascal GPU, and cublasCreate throws (#56). A
+            # broken export fails here again, and raises.
+            if device != "cuda":
+                raise
+            _log.exception("parakeet: the CUDA provider failed to start")
+            self._encoder = ort.InferenceSession(files.encoder, encoder_opts, providers=cpu)
         # ORT drops to the CPU with only a log line when the CUDA provider
         # cannot load: no libcuda.so.1 in the snap, a driver older than CUDA 13,
         # a kernel module that did not build. The session it built is a
