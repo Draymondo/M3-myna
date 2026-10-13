@@ -436,6 +436,19 @@ def test_a_sideload_without_the_default_model_keeps_an_installed_one(tmp_path: P
     assert "snapctl set cache.active-model=small" in ran[:engine], ran
 
 
+def test_an_accelerator_only_sideload_defers_the_cpu_engine(tmp_path: Path) -> None:
+    """With only non-cpu weights installed, `use-engine cpu` would reach for the
+    default model in the store, which a sideload cannot do, and fail the install."""
+    ran = _run_install_hook("whisper-snap", tmp_path, components=["model-large-v3-turbo"])
+    assert not any(c.startswith("modelctl use-engine") for c in ran), ran
+
+
+def test_a_bare_install_still_selects_the_cpu_engine(tmp_path: Path) -> None:
+    """A store install has no components yet: modelctl fetches the default."""
+    ran = _run_install_hook("whisper-snap", tmp_path, components=[])
+    assert "modelctl use-engine cpu --assume-yes --no-restart" in ran, ran
+
+
 def test_the_default_model_wins_when_it_is_installed(tmp_path: Path) -> None:
     ran = _run_install_hook("whisper-snap", tmp_path, components=["model-tiny", "model-base"])
     assert "snapctl set cache.active-model=base" in ran, ran

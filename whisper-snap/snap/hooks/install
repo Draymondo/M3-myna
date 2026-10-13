@@ -61,6 +61,12 @@ use_cpu() {
     model="$(installed_model cpu)"
     if [ -n "$model" ]; then
         snapctl set cache.active-model="$model"
+    elif [ -n "$(find "$SNAP_COMPONENTS" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+        # Components are sideloaded but none is a cpu model: use-engine would
+        # fetch the default from the store and fail the install. The engine
+        # stays unset until the administrator selects one (whisper-snap/README.md).
+        echo "no cpu model component is installed: deferring engine selection"
+        return 0
     fi
     modelctl use-engine cpu --assume-yes --no-restart
 }
