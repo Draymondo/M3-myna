@@ -167,6 +167,18 @@ parts:
     organize:
       "server.sh": bin/
 
+  # modelctl reads the GPU's compute capability through nvidia-smi, and an
+  # engine whose compute-capability it cannot read does not match. Only the
+  # binary: its NVML library is the host driver's, through opengl.
+  nvidia-smi:
+    plugin: nil
+    build-packages:
+      - nvidia-utils-580
+    override-build: |
+      install -D /usr/bin/nvidia-smi "$CRAFT_PART_INSTALL/usr/bin/nvidia-smi"
+      install -D --mode=644 /usr/share/doc/nvidia-utils-580/copyright \
+          "$CRAFT_PART_INSTALL/usr/share/doc/nvidia-utils-580/copyright"
+
   # Model weights as components. Populate components/ with
   # ./dev/download-models.sh before packing. Each model-<size>-ct2/ directory
   # (CTranslate2 conversion: model.bin, config.json, tokenizer.json, …) is

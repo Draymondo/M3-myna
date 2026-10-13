@@ -40,12 +40,13 @@ environment (about 2 GB, locked in `export_parakeet_onnx.py.lock`), and a 2.4 GB
 checkpoint download.
 
 Needs an NVIDIA driver of 580 or later (CUDA 13) and a Turing or newer GPU.
-modelctl matches the engine on the NVIDIA vendor id alone, so the install and
-hardware-observe hooks first ask the driver (`python3 -m myna.server.cuda_probe
-13.0`) and select `cpu` when this snap cannot use it. When the CUDA provider
-cannot load later (a driver removed or downgraded since), the server runs the
-fp32 graphs on the CPU, slower, and tells the user each session; `use-engine
-cpu` switches to the faster int8 graphs for good.
+modelctl matches the engine on the GPU's compute capability (7.5 or newer,
+read through `nvidia-smi`), and the install and hardware-observe hooks ask the
+driver for its CUDA version first (`python3 -m myna.server.cuda_probe 13.0`),
+selecting `cpu` when either falls short. When the CUDA provider cannot load
+later (a driver removed or downgraded since), the server runs the fp32 graphs
+on the CPU, slower, and tells the user each session; `use-engine cpu` switches
+to the faster int8 graphs for good.
 
 ```bash
 sudo snap install --dangerous \

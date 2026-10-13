@@ -8,16 +8,18 @@ description: |
   Needs an NVIDIA driver of 580 or later and a Turing or newer GPU.
 vendor: Canonical Ltd
 
-# Matched on the vendor alone. modelctl can also check vram and
-# compute-capability, but reads both through nvidia-smi, which this snap does
-# not stage - either key would make the engine never match. The hooks check
-# the driver before `--auto` (myna.server.cuda_probe); on a GPU or driver
-# CUDA 13 cannot use after that, the server serves the fp32 graphs on the CPU
-# and warns each session.
+# CUDA 13's cuBLAS, cuDNN and onnxruntime kernels start at Turing (7.5): a
+# Pascal card under a new driver failed at cublasCreate (#56). modelctl reads
+# the capability through the snap's nvidia-smi, which fails without a working
+# driver. It cannot read the driver's CUDA version, so the hooks check that
+# before `--auto` (myna.server.cuda_probe); on a GPU or driver CUDA 13 cannot
+# use after that, the server serves the fp32 graphs on the CPU and warns each
+# session.
 devices:
   allof:
     - type: gpu
       vendor-id: 0x10de # NVIDIA Corporation
+      compute-capability: ">=7.5"
   anyof:
     - type: cpu
       architecture: amd64

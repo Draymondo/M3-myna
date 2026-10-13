@@ -6,10 +6,14 @@ description: |
   CUDA runtime (CTranslate2 + cuBLAS/cuDNN) ships as an on-demand component.
 vendor: Canonical Ltd
 
+# CTranslate2's oldest kernels are for 5.3. modelctl reads the capability
+# through the snap's nvidia-smi, which fails without a working driver; the
+# hooks check the driver's CUDA version (myna.server.cuda_probe).
 devices:
   allof:
     - type: gpu
       vendor-id: 0x10de # NVIDIA Corporation
+      compute-capability: ">=5.3"
   anyof:
     - type: cpu
       architecture: amd64

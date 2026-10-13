@@ -38,8 +38,8 @@ run once per backend and diff the collapsed-window sets.
 - Each new input shape pays ONNX Runtime kernel-setup cost: streaming
   (mostly novel window lengths) measured ~150x this cost versus ~240x for
   repeated lengths. Not mitigated in this beta; would need shape bucketing.
-- Arena fragmentation, the IOBinding-on-host pitfall, and vendor-id-only
-  engine matching are covered in `server/.kb/inference-packaging.md`'s GPU
+- Arena fragmentation, the IOBinding-on-host pitfall, and GPU engine
+  matching are covered in `server/.kb/inference-packaging.md`'s GPU
   engines section; not repeated here.
 
 ## fp16 dropped (2026-09-17)

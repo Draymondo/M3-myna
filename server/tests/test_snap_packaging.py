@@ -265,6 +265,35 @@ def test_multi_engine_snaps_declare_the_reselect_hook(snap_dir: str) -> None:
     )
 
 
+NVIDIA = 0x10DE
+
+
+def _nvidia_devices(snap_dir: str) -> list[tuple[str, dict]]:
+    found = []
+    for path in sorted((REPO_ROOT / snap_dir / "engines").glob("*/engine.yaml")):
+        devices = yaml.safe_load(path.read_text(encoding="utf-8")).get("devices") or {}
+        for device in (devices.get("allof") or []) + (devices.get("anyof") or []):
+            if device.get("vendor-id") == NVIDIA:
+                found.append((path.parent.name, device))
+    return found
+
+
+@pytest.mark.parametrize("snap_dir", sorted(d for d in INFERENCE_SNAPS if _nvidia_devices(d)))
+def test_nvidia_engines_match_on_the_gpus_compute_capability(snap_dir: str) -> None:
+    """A Pascal card matched on the vendor alone got the CUDA 13 engine and
+    failed at cublasCreate (#56). modelctl reads the capability through
+    nvidia-smi; without it the key is never reported and never matches."""
+    name = INFERENCE_SNAPS[snap_dir]
+    for engine, device in _nvidia_devices(snap_dir):
+        assert str(device.get("compute-capability", "")).startswith(">="), (
+            f"{name}: engines/{engine} matches any NVIDIA GPU, however old"
+        )
+    part = _recipe(snap_dir)["parts"].get("nvidia-smi") or {}
+    assert "/usr/bin/nvidia-smi" in part.get("override-build", ""), (
+        f"{name}: no nvidia-smi staged, so modelctl never sees a compute capability"
+    )
+
+
 def _fake_python(bin_dir: Path, *, gpu: bool) -> None:
     """The snap's python3, with the CUDA probe scripted: real probes would
     answer for whatever machine runs the suite."""
