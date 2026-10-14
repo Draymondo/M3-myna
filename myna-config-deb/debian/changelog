@@ -7,6 +7,9 @@ myna-config (0.2.3-0ubuntu1) stonking; urgency=medium
   * Myna tells you when dictation is slowed by low memory.
   * Report an Issue includes each model's engine and status even when
     Diagnostics was never opened.
+  * An NVIDIA GPU older than the engine's CUDA libraries support, such
+    as a GTX 1050, gets the CPU engine too, and a GPU that cannot start
+    keeps transcribing on the CPU (#56).
 
  -- Charles <charles05@canonical.com>  Mon, 12 Oct 2026 21:24:49 +0100
 
