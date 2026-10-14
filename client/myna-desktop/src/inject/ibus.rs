@@ -301,9 +301,9 @@ fn discover_address_in(env: &dyn Fn(&str) -> Option<String>) -> Result<String, I
         dead => dead,
     };
     discover_address_file(env).map_err(|e| match (dead_env, e) {
-        (Some(addr), InjectError::Unavailable(why)) => {
-            InjectError::Unavailable(format!("IBUS_ADDRESS {addr} has no socket, and {why}"))
-        }
+        (Some(addr), InjectError::Unavailable(why)) => InjectError::Unavailable(format!(
+            "IBUS_ADDRESS {addr} has no socket (remove that override), and {why}"
+        )),
         (_, e) => e,
     })
 }
@@ -473,7 +473,7 @@ fn pick_address(
     Err(match stale {
         Some((name, why)) => InjectError::Unavailable(format!(
             "no IBus daemon answers: tried {tried} address file(s), best is {name} where {why}. \
-             Is IBus running in this session? Try `ibus restart` (or set IBUS_ADDRESS)."
+             Is IBus running in this session? Try `ibus restart`."
         )),
         None => InjectError::Unavailable(format!(
             "no usable IBus address in {} (is an IBus daemon running? try `ibus restart`)",
