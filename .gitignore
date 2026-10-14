@@ -2,14 +2,10 @@
 # These carry their own .git and would commit as broken gitlinks — keep out.
 reference/
 
-fixtures/
+# dev/generate_fixtures.py's clips; every other fixtures/ is a checked-in source.
+/server/fixtures/
 corpus/
 .cache/
-
-# ...but myna-config's test fixtures are checked-in sources, not corpus data:
-# `fixtures/` above is for audio clips, and it hid a directory the test suite
-# cannot compile without.
-!client/myna-config/tests/fixtures/
 
 # Snap build artifacts
 # .pip-cache/ is the persistent pip cache each snapcraft.yaml points
