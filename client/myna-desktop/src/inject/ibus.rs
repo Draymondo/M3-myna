@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,6 +57,12 @@ const ENGINE_PATH: &str = "/org/freedesktop/IBus/Engine/Myna";
 /// one it focuses after every `FocusOut` (1.5.34). The path it holds looks
 /// like any other context's, so the client is what names it.
 const FAKE_CLIENT: &str = "fake";
+
+/// The client string of GNOME Shell's input context, through which every
+/// application on GNOME Wayland is focused. libibus 1.5.33 and 1.5.34 hand it
+/// a preedit attribute list GJS frees twice, which crashes the Shell (#18), so
+/// its preedit goes out with no attributes.
+const SHELL_CLIENT: &str = "gnome-shell";
 
 /// How far apart a `FocusOut` and an activation may be to belong together. A
 /// global key grab on X11 sends the focused window FocusOut on the key's
@@ -190,15 +196,20 @@ fn ibus_preedit_attr_list(end: u32) -> Value<'static> {
 }
 
 /// `IBusText` for preedit: the volatile hypothesis marked as composing over its
-/// whole length, leaving the client to choose the visual treatment.
-fn ibus_preedit_text(text: &str) -> Value<'static> {
-    let chars = text.chars().count() as u32;
+/// whole length, leaving the client to choose the visual treatment. Without
+/// `hint` the attribute list is empty, the path libibus handles safely.
+fn ibus_preedit_text(text: &str, hint: bool) -> Value<'static> {
+    let attrs = if hint {
+        ibus_preedit_attr_list(text.chars().count() as u32)
+    } else {
+        ibus_attr_list()
+    };
     Value::from(
         StructureBuilder::new()
             .add_field("IBusText".to_string())
             .add_field(empty_attach())
             .add_field(text.to_string())
-            .append_field(variant_wrap(ibus_preedit_attr_list(chars))) // `v`
+            .append_field(variant_wrap(attrs)) // `v`
             .build()
             .expect("IBusText structure"),
     )
@@ -736,6 +747,10 @@ struct EngineState {
     /// that supersedes another finds `myna-stt` global and must not take that
     /// for the user's engine.
     displaced: watch::Sender<Option<String>>,
+    /// Whether the last field focused by name is GNOME Shell's, whose preedit
+    /// carries no attributes ([`SHELL_CLIENT`]). Focus on any other field ends
+    /// the lease, so this is the client of the field a lease writes to.
+    shell_focused: AtomicBool,
 }
 
 impl EngineState {
@@ -754,6 +769,7 @@ impl EngineState {
             next_blip: AtomicU64::new(1),
             runtime: tokio::runtime::Handle::try_current().ok(),
             displaced: watch::Sender::new(None),
+            shell_focused: AtomicBool::new(false),
         }
     }
 
@@ -776,6 +792,12 @@ impl EngineState {
     }
 
     fn focus(self: &Arc<Self>, change: FocusChange<'_>) {
+        match change {
+            FocusChange::In(Some(ctx)) if !ctx.is_fake() => self
+                .shell_focused
+                .store(ctx.client == SHELL_CLIENT, Ordering::Relaxed),
+            _ => {}
+        }
         let blip = self.next_blip.fetch_add(1, Ordering::Relaxed);
         let mut began = false;
         self.lease.send_modify(|lease| {
@@ -999,6 +1021,11 @@ impl EngineState {
 
     fn content_type(&self) -> ContentType {
         *self.content_type.borrow()
+    }
+
+    /// Whether preedit may carry the WHOLE hint to the focused field.
+    fn preedit_hint(&self) -> bool {
+        !self.shell_focused.load(Ordering::Relaxed)
     }
 }
 
@@ -1436,7 +1463,12 @@ impl IbusTarget {
         match self
             .emit(
                 "UpdatePreeditText",
-                &(ibus_preedit_text(text), cursor, true, PREEDIT_MODE_CLEAR),
+                &(
+                    ibus_preedit_text(text, self.state.preedit_hint()),
+                    cursor,
+                    true,
+                    PREEDIT_MODE_CLEAR,
+                ),
             )
             .await
         {
@@ -1531,7 +1563,7 @@ mod tests {
     /// string, and the cursor/end index counts **chars**, not bytes.
     #[test]
     fn preedit_text_has_whole_hint_and_char_indexed() {
-        let v = ibus_preedit_text("héllo w");
+        let v = ibus_preedit_text("héllo w", true);
         let Value::Structure(s) = &v else {
             panic!("IBusText must be a structure")
         };
@@ -1567,6 +1599,50 @@ mod tests {
 
     fn engine_state() -> Arc<EngineState> {
         Arc::new(EngineState::new())
+    }
+
+    /// The attributes of a serialized preedit `IBusText`.
+    fn preedit_attrs(v: &Value<'_>) -> usize {
+        let Value::Structure(s) = v else {
+            panic!("IBusText must be a structure")
+        };
+        let Value::Value(attrs) = &s.fields()[3] else {
+            panic!("attrs must be variant-wrapped")
+        };
+        let Value::Structure(attrs) = &**attrs else {
+            panic!("attrs structure")
+        };
+        let Value::Array(list) = &attrs.fields()[2] else {
+            panic!("attr array")
+        };
+        list.len()
+    }
+
+    /// #18: without the hint, preedit carries an empty attribute list.
+    #[test]
+    fn preedit_text_without_hint_has_no_attributes() {
+        assert_eq!(preedit_attrs(&ibus_preedit_text("héllo w", false)), 0);
+        assert_eq!(preedit_attrs(&ibus_preedit_text("héllo w", true)), 1);
+    }
+
+    fn focus_in(state: &Arc<EngineState>, path: &str, client: &str) {
+        state.focus(FocusChange::In(Some(Context { path, client })));
+    }
+
+    /// #18: GNOME Shell's field gets no preedit hint, any other field does,
+    /// and the daemon's fake context or an unnamed focus changes neither.
+    #[test]
+    fn preedit_hint_follows_the_focused_client() {
+        let state = engine_state();
+        assert!(state.preedit_hint(), "no field named yet");
+        focus_in(&state, "/org/freedesktop/IBus/InputContext_2", SHELL_CLIENT);
+        assert!(!state.preedit_hint());
+        focus_in(&state, "/org/freedesktop/IBus/InputContext_1", FAKE_CLIENT);
+        state.focus(FocusChange::In(None));
+        state.focus(FocusChange::Out(None));
+        assert!(!state.preedit_hint(), "still GNOME Shell's field");
+        focus_in(&state, "/org/freedesktop/IBus/InputContext_3", "gtk3-im");
+        assert!(state.preedit_hint());
     }
 
     fn engine(state: &Arc<EngineState>) -> EngineObject {
