@@ -384,6 +384,8 @@ class FasterWhisperAdapter:
                 # blocking download + load: keep it off the event loop
                 try:
                     model = await asyncio.to_thread(load, device=device, compute_type=compute_type)
+                    if device == "cuda":
+                        await asyncio.to_thread(_first_decode, model)
                 except Exception:
                     # A device it counts can still fail to start (#56). A
                     # broken model fails on the CPU again, and raises.
@@ -676,6 +678,18 @@ class FasterWhisperAdapter:
 
         await run_deferred_batch(audio, emit, decode, on_commit)
         return finals
+
+
+def _first_decode(model: Any) -> None:
+    """Decode a second of silence. CTranslate2 creates its cuBLAS handle at the
+    first GEMM, so a GPU cuBLAS cannot run on loads fine and fails here."""
+    import numpy as np
+
+    segments, _info = model.transcribe(
+        np.zeros(WHISPER_RATE, dtype=np.float32), language="en", beam_size=1, max_new_tokens=1
+    )
+    for _segment in segments:
+        pass
 
 
 def _prompt_tokens(model: Any, prompt: str) -> list[int]:

@@ -139,16 +139,23 @@ class _RecordingWhisperModel:
     loads: list[tuple[str, str]] = []
     sources: list[tuple[str, str | None]] = []
     fails_on: tuple[str, ...] = ()
+    decode_fails_on: tuple[str, ...] = ()
 
     def __init__(self, model_size, *, device, compute_type, download_root):
         self.loads.append((device, compute_type))
         self.sources.append((model_size, download_root))
         if device in self.fails_on:
             raise RuntimeError(f"failed on {device}")
+        self.device = device
         self.model = type("CT2", (), {"compute_type": compute_type})()
 
     def transcribe(self, samples, **kwargs):
-        return iter(()), None
+        def segments():
+            if self.device in self.decode_fails_on:
+                raise RuntimeError("cuBLAS failed with status CUBLAS_STATUS_ARCH_MISMATCH")
+            yield from ()
+
+        return segments(), None
 
 
 def _fake_whisper_stack(monkeypatch, cuda_devices):
@@ -166,6 +173,7 @@ def _fake_whisper_stack(monkeypatch, cuda_devices):
     _RecordingWhisperModel.loads = []
     _RecordingWhisperModel.sources = []
     _RecordingWhisperModel.fails_on = ()
+    _RecordingWhisperModel.decode_fails_on = ()
     monkeypatch.setitem(
         sys.modules, "faster_whisper", type("F", (), {"WhisperModel": _RecordingWhisperModel})
     )
@@ -197,6 +205,19 @@ def test_a_gpu_ctranslate2_cannot_start_on_loads_on_the_cpu(monkeypatch):
 
     assert _RecordingWhisperModel.loads == [("cuda", "float16"), ("cpu", "default")]
     assert _RecordingWhisperModel.sources == [("small", "/models")] * 2
+    assert adapter.capabilities().runtime["device"] == "cpu"
+
+
+def test_a_gpu_that_fails_at_its_first_decode_loads_on_the_cpu(monkeypatch):
+    """CTranslate2 creates its cuBLAS handle at the first GEMM, so on a card
+    cuBLAS has no kernels for, construction passes and every transcribe fails."""
+    _fake_whisper_stack(monkeypatch, cuda_devices=1)
+    _RecordingWhisperModel.decode_fails_on = ("cuda",)
+    adapter = FasterWhisperAdapter("small", device="cuda", compute_type="float16")
+
+    asyncio.run(adapter._load_model())
+
+    assert _RecordingWhisperModel.loads == [("cuda", "float16"), ("cpu", "default")]
     assert adapter.capabilities().runtime["device"] == "cpu"
 
 
