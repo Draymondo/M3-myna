@@ -69,7 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--streaming",
         action="store_true",
-        help="enable streaming mode (progressive committed segments; whisper/parakeet)",
+        help="enable streaming mode (progressive committed segments; whisper/parakeet; "
+        "fake: one unstable hypothesis ahead of the first segment)",
     )
     parser.add_argument(
         "--stream-cadence-s",
@@ -181,7 +182,7 @@ def build_adapter(args: argparse.Namespace) -> Adapter:
         # integration-test without a GPU or model. See myna.testbed.fake.
         from myna.testbed.fake import FakeAdapter
 
-        return FakeAdapter()
+        return FakeAdapter(streaming=args.streaming)
 
     if args.adapter == "whisper":
         from myna.testbed.whisper import (

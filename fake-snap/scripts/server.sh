@@ -3,7 +3,12 @@
 # The client snap reaches it via its `backend` plug bind-mount.
 mkdir -p "$SNAP_COMMON/share/provider"
 export PYTHONPATH="$SNAP/usr/local/lib/python3.12/dist-packages"
+# `snap set myna-fake-backend streaming=true` (hooks/configure): the
+# streaming script, for the e2e preedit case.
+streaming=()
+[ "$(snapctl get streaming)" = true ] && streaming=(--streaming)
 exec /usr/bin/python3 -m myna.server \
   --adapter fake \
   --socket "$SNAP_COMMON/share/provider/myna.sock" \
-  --share-provider
+  --share-provider \
+  "${streaming[@]}"

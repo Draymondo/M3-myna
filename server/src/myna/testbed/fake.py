@@ -16,6 +16,7 @@ from myna.core import (
     PHASE_PREPARING,
     PHASE_READY,
     Capabilities,
+    Disposition,
     EventSink,
     PcmChunk,
     SessionConfig,
@@ -53,6 +54,20 @@ def default_script() -> tuple[ScriptStep, ...]:
     )
 
 
+def streaming_script() -> tuple[ScriptStep, ...]:
+    """The default script with one unstable hypothesis ahead of the first
+    committed segment, as a streaming engine sends: what a client in streaming
+    mode renders as preedit, and never commits."""
+    script = default_script()
+    first_final = next(
+        i for i, step in enumerate(script) if isinstance(step.event, TranscriptionFinal)
+    )
+    hypothesis = ScriptStep(
+        0.05, TranscriptionFinal(text="The quick brown", disposition=Disposition.UNSTABLE)
+    )
+    return (*script[:first_final], hypothesis, *script[first_final:])
+
+
 class FakeAdapter:
     """Plays a script of events on a timeline, draining audio concurrently.
 
@@ -67,9 +82,13 @@ class FakeAdapter:
         script: Sequence[ScriptStep] | None = None,
         *,
         done_after_audio_ends: bool = True,
+        streaming: bool = False,
     ) -> None:
-        self._script = tuple(script) if script is not None else default_script()
+        if script is None:
+            script = streaming_script() if streaming else default_script()
+        self._script = tuple(script)
         self._done_after_audio_ends = done_after_audio_ends
+        self._streaming = streaming
 
     @property
     def candidate(self) -> Candidate:
@@ -77,8 +96,9 @@ class FakeAdapter:
 
     def capabilities(self) -> Capabilities:
         # The fixture pins the discovery surface (T24) without a model: a single
-        # default format, batch, no language/punctuation/translation claims.
-        return Capabilities(models=("fake",), streaming=False)
+        # default format, batch unless built streaming, no language/punctuation/
+        # translation claims.
+        return Capabilities(models=("fake",), streaming=self._streaming)
 
     async def run_session(
         self,
@@ -100,7 +120,10 @@ class FakeAdapter:
             for step in self._script:
                 await asyncio.sleep(step.delay_seconds)
                 await emit(step.event)
-                if isinstance(step.event, TranscriptionFinal):
+                if (
+                    isinstance(step.event, TranscriptionFinal)
+                    and step.event.disposition == Disposition.COMMITTED
+                ):
                     finals.append(step.event.text)
                 terminal_emitted = step.event.type in (
                     "transcription.done",

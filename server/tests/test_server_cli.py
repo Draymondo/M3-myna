@@ -56,6 +56,12 @@ def test_fake_adapter_builds_without_any_extra():
     assert isinstance(build_adapter(parse("--adapter", "fake")), FakeAdapter)
 
 
+def test_fake_adapter_streams_only_with_streaming():
+    assert build_adapter(parse("--adapter", "fake")).capabilities().streaming is False
+    streaming = build_adapter(parse("--adapter", "fake", "--streaming"))
+    assert streaming.capabilities().streaming is True
+
+
 def test_whisper_streaming_defaults_are_the_measured_ones():
     """The re-decode cadence is a measured value, not a taste.
 

@@ -123,3 +123,25 @@ async def test_batch_session_is_degenerate_streaming():
     # Absent disposition defaults to committed (backward-compat, FR-004)
     finals = [te for te in record.events if te.event.type == "transcription.final"]
     assert all(te.event.disposition == Disposition.COMMITTED for te in finals)
+
+
+@pytest.mark.asyncio
+async def test_streaming_fake_sends_one_hypothesis_it_never_commits():
+    """The streaming fake: one unstable hypothesis ahead of the first committed
+    segment, left out of the transcript (the e2e preedit case drives it)."""
+    service = FakeAdapter(streaming=True)
+    assert service.capabilities().streaming is True
+    record = await Harness().run(
+        client=LoopbackClient(service),
+        candidate=service.candidate,
+        source=_source(),
+        config=SessionConfig(),
+    )
+
+    finals = [te.event for te in record.events if te.event.type == "transcription.final"]
+    assert [(f.text, f.disposition) for f in finals] == [
+        ("The quick brown", Disposition.UNSTABLE),
+        ("The quick brown fox", Disposition.COMMITTED),
+        ("jumps over the lazy dog.", Disposition.COMMITTED),
+    ]
+    assert record.transcript == "The quick brown fox jumps over the lazy dog."

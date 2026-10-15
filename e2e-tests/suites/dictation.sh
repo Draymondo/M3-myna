@@ -29,6 +29,11 @@
 #      with no wait for the HUD: the host's registration stands in for the
 #      pill that is on its way, so no toast, and the pill shows while still
 #      listening.
+#  10. the backend streaming: its hypothesis goes out as preedit and the whole
+#      transcript, never the hypothesis, lands. On GNOME the preedit reaches
+#      the Shell's own IBus client, which libibus 1.5.33-1.5.34 crash with a
+#      non-empty attribute list (#18): the Shell logs no IBusAttrList double
+#      free through two GJS collections and is still the same process.
 set -uo pipefail
 # shellcheck source=e2e-tests/suites/lib.sh
 source "$(dirname "$0")/lib.sh"
@@ -225,6 +230,32 @@ if [ "$DESKTOP" = xubuntu ]; then
     assert_dict "the HUD logged no GTK critical" 'hud_log_clean'
     evidence 9
 fi
+
+echo "-- 10. a streaming backend's hypothesis as preedit"
+assert_dict "the daemon logs at the debug tier" 'daemon_debug on'
+assert_dict "the fake backend streams" 'fake_streaming true'
+assert_dict "the field is cleared" 'field_clear'
+assert_dict "the plain field is focused afresh" 'field_focus other && field_focus plain'
+dict 'shell_pid > myna-shot/shell.pid; journal_mark'
+dict dictation_toggle
+assert_dict "recording" 'wait_until 10 dictation_state_is recording'
+assert_dict "the first segment lands" "wait_until 10 field_is plain '$FIRST'"
+dict dictation_toggle
+assert_dict "idle after the stop" 'wait_until 10 dictation_state_is idle'
+assert_dict "the whole transcript, not the hypothesis, is in the field" \
+    "wait_until 10 field_is plain '$FULL'"
+# shellcheck disable=SC2016 # expands in the VM
+assert_dict "the hypothesis went out as preedit" '[ "$(journal_count "inject: preedit(")" -ge 1 ]'
+if [ "$DESKTOP" = gnome ]; then
+    # shellcheck disable=SC2016 # expands in the VM
+    assert_dict "GNOME Shell freed no IBusAttrList twice (#18)" \
+        'sleep 25; [ "$(shell_attr_list_criticals)" = 0 ]'
+    # shellcheck disable=SC2016 # expands in the VM
+    assert_dict "GNOME Shell is still the same process" \
+        '[ "$(shell_pid)" = "$(cat myna-shot/shell.pid)" ]'
+fi
+evidence 10
+dict 'fake_streaming false; daemon_debug off' >/dev/null 2>&1
 
 dict 'mic_stop' >/dev/null 2>&1
 suite_status

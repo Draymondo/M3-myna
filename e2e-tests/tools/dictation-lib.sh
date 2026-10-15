@@ -163,6 +163,36 @@ daemon_restart() {
     systemctl --user restart snap.myna.myna.service
     wait_until 30 dictation_state_is idle
 }
+# The daemon with MYNA_DEBUG on or off (a service drop-in), restarted: the
+# preedit it sends is logged only at that tier.
+daemon_debug() {
+    local dropin=$HOME/.config/systemd/user/snap.myna.myna.service.d
+    case $1 in
+        on) mkdir -p "$dropin" && printf '[Service]\nEnvironment=MYNA_DEBUG=1\n' > "$dropin/debug.conf" ;;
+        off) rm -f "$dropin/debug.conf" ;;
+    esac
+    systemctl --user daemon-reload
+    daemon_restart
+}
+
+# The fake backend serving its streaming script (one unstable hypothesis
+# ahead of the first segment) or its batch one; the daemon restarted after,
+# so it learns the backend's mode afresh.
+fake_streaming() {
+    sudo snap set myna-fake-backend streaming="$1"
+    wait_until 30 test -S /var/snap/myna-fake-backend/common/share/provider/myna.sock
+    daemon_restart
+}
+
+# GNOME Shell's own process: its PID, and whether it has logged the
+# IBusAttrList double free (#18) since the journal mark. Its leaked wrapper is
+# finalized at a GJS collection, which runs about every 10 s.
+shell_pid() { pgrep -xu "$USER" gnome-shell; }
+shell_attr_list_criticals() {
+    journalctl --user --no-pager --since "@$(cat "$JOURNAL_MARK")" _COMM=gnome-shell \
+        | grep -c -e 'IBusAttrList has been finalized' -e "assertion 'G_IS_OBJECT (object)' failed"
+}
+
 # The pill is up while the daemon is still listening: it was not too late.
 pill_while_listening() { pill_shows && dictation_state_is recording; }
 
