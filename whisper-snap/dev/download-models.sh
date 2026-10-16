@@ -7,7 +7,7 @@
 # redistributable as components. Output dirs are gitignored; run this before
 # packing.
 #
-#   ./dev/download-models.sh                          # all five models
+#   ./dev/download-models.sh                          # every model this arch serves
 #   ./dev/download-models.sh small                    # just one
 #   MYNA_MODEL_SRC=~/path/to/models ./dev/download-models.sh small  # reuse a
 #       # local copy (hardlinked in, no download) if it has model-<size>-ct2/
@@ -45,7 +45,12 @@ declare -A REVISIONS=(
 # MYNA_MODEL_SRC is the only thing that saves the bytes across checkouts.
 src_root="${MYNA_MODEL_SRC:-}"
 
-models=("${@:-tiny base small large-v3 large-v3-turbo}")
+# The large models are GPU-tier only, and the GPU engine is amd64-only.
+default="tiny base small"
+if [ "$(dpkg --print-architecture)" = amd64 ]; then
+    default="$default large-v3 large-v3-turbo"
+fi
+models=("${@:-$default}")
 # shellcheck disable=SC2128  # intentional word-split of the default set
 read -r -a models <<<"${models[*]}"
 

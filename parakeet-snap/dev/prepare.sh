@@ -20,6 +20,12 @@ ls -l "$snap_dir/wheels"
 # already in --dest, so only what is missing is fetched.
 wheels="${XDG_CACHE_HOME:-$HOME/.cache}/myna/wheels"
 house="$snap_dir/wheelhouse-cuda"
+# The CUDA runtime is amd64-only; elsewhere its part builds nothing.
+if [ "$(dpkg --print-architecture)" != amd64 ]; then
+    rm -rf "$house"
+    mkdir -p "$house"
+    exit 0
+fi
 report="$(mktemp)"
 trap 'rm -f "$report"' EXIT
 target=(--only-binary=:all: --python-version 3.12 --implementation cp --abi cp312
