@@ -140,6 +140,8 @@ class _RecordingWhisperModel:
     sources: list[tuple[str, str | None]] = []
     fails_on: tuple[str, ...] = ()
     decode_fails_on: tuple[str, ...] = ()
+    cuda_decodes_before_failing: int | None = None
+    decodes: list[str] = []
 
     def __init__(self, model_size, *, device, compute_type, download_root):
         self.loads.append((device, compute_type))
@@ -151,11 +153,15 @@ class _RecordingWhisperModel:
 
     def transcribe(self, samples, **kwargs):
         def segments():
+            self.decodes.append(self.device)
             if self.device in self.decode_fails_on:
                 raise RuntimeError("cuBLAS failed with status CUBLAS_STATUS_ARCH_MISMATCH")
+            limit = self.cuda_decodes_before_failing
+            if self.device == "cuda" and limit is not None and self.decodes.count("cuda") > limit:
+                raise RuntimeError("CUDA failed with error out of memory")
             yield from ()
 
-        return segments(), None
+        return segments(), type("Info", (), {"language": "en"})()
 
 
 def _fake_whisper_stack(monkeypatch, cuda_devices):
@@ -174,6 +180,8 @@ def _fake_whisper_stack(monkeypatch, cuda_devices):
     _RecordingWhisperModel.sources = []
     _RecordingWhisperModel.fails_on = ()
     _RecordingWhisperModel.decode_fails_on = ()
+    _RecordingWhisperModel.cuda_decodes_before_failing = None
+    _RecordingWhisperModel.decodes = []
     monkeypatch.setitem(
         sys.modules, "faster_whisper", type("F", (), {"WhisperModel": _RecordingWhisperModel})
     )
@@ -248,6 +256,45 @@ def test_a_usable_gpu_loads_as_asked(monkeypatch):
 
     assert _RecordingWhisperModel.loads == [("cuda", "float16")]
     assert adapter.capabilities().runtime["device"] == "cuda"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_gpu_that_fails_mid_session_finishes_it_on_the_cpu(monkeypatch, streaming):
+    """The warm-up decode passed, then a later one ran out of memory: decode
+    it on the CPU, and every one after."""
+    import numpy as np
+
+    from myna.core import PcmChunk, TranscriptionDone
+
+    _fake_whisper_stack(monkeypatch, cuda_devices=1)
+    _RecordingWhisperModel.cuda_decodes_before_failing = 1
+    adapter = FasterWhisperAdapter(
+        "small", device="cuda", compute_type="float16", streaming=streaming
+    )
+    fmt = AudioFormat(sample_rate_hz=WHISPER_RATE, channels=1, sample_width_bytes=2)
+    tone = (np.sin(np.arange(3 * WHISPER_RATE) * 0.05) * 8000).astype(np.int16).tobytes()
+
+    async def drive():
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        async def audio():
+            yield PcmChunk(data=tone, format=fmt)
+
+        await adapter.run_session(SessionConfig(audio_format=fmt), audio(), emit)
+        return events
+
+    events = asyncio.run(drive())
+
+    assert not [e for e in events if isinstance(e, TranscriptionError)]
+    assert [e for e in events if isinstance(e, TranscriptionDone)]
+    assert _RecordingWhisperModel.loads == [("cuda", "float16"), ("cpu", "default")]
+    assert _RecordingWhisperModel.decodes[:3] == ["cuda", "cuda", "cpu"]
+    assert set(_RecordingWhisperModel.decodes[3:]) <= {"cpu"}
+    assert adapter.capabilities().runtime["device"] == "cpu"
+    assert adapter.gpu_unavailable
 
 
 def test_a_session_on_a_cpu_fallback_says_so_when_ready(monkeypatch):

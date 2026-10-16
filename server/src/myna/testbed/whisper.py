@@ -28,6 +28,7 @@ import functools
 import logging
 import os
 import re
+import threading
 from collections import deque
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
@@ -278,6 +279,7 @@ class FasterWhisperAdapter:
     ) -> None:
         self._model_size = model_size
         self._device = device
+        self._device_lock = threading.Lock()
         self._compute_type = compute_type
         self._download_root = download_root
         self._streaming = streaming
@@ -404,6 +406,38 @@ class FasterWhisperAdapter:
                 )
         return self._model
 
+    def _drain(self, model: Any, samples: Any, options: dict[str, Any]) -> tuple[list[Any], Any]:
+        """Decode, reading every segment. A GPU that started can still fail a
+        later decode (out of memory): this one and every later one run on the
+        CPU. One that fails there too is not the GPU's, and raises."""
+        if self._model is not None:
+            model = self._model
+        on = self._serving_device
+        try:
+            segments, info = model.transcribe(samples, **options)
+            return list(segments), info
+        except Exception:
+            if on != "cuda":
+                raise
+            _log.exception("whisper: a decode failed on the GPU; serving on the CPU")
+            model = self._serve_on_cpu()
+            segments, info = model.transcribe(samples, **options)
+            return list(segments), info
+
+    def _serve_on_cpu(self) -> Any:
+        from faster_whisper import WhisperModel
+
+        with self._device_lock:
+            if self._serving_device != "cpu":
+                self._model = WhisperModel(
+                    self._model_size,
+                    device="cpu",
+                    compute_type="default",
+                    download_root=self._download_root,
+                )
+                self._serving_device = "cpu"
+            return self._model
+
     async def unload(self) -> None:
         """Release the model (idle-unload, T27). Dropping the CTranslate2
         reference frees its CPU/GPU memory; ``_load_model`` reloads on the next
@@ -495,9 +529,9 @@ class FasterWhisperAdapter:
         options = stream_decode_options(config.language, config.prompt, self._stream_beam_size)
 
         def decode(samples: NDArray[np.float32], offset: float) -> Hypothesis:
-            segments, _info = model.transcribe(samples, **options)
+            segments, _info = self._drain(model, samples, options)
             words: list[Word] = []
-            for seg in segments:  # drain the generator (we're in a thread)
+            for seg in segments:
                 for w in seg.words or []:
                     words.append(Word(text=w.word, start=w.start + offset, end=w.end + offset))
             return Hypothesis(words=words)
@@ -568,7 +602,7 @@ class FasterWhisperAdapter:
                 condition_on_previous_text=self._batch_condition_on_previous_text,
                 vad_filter=self._batch_vad_filter,
             )
-            segments, info = model.transcribe(samples, **options)
+            segments, info = self._drain(model, samples, options)
             region.clear()
             words: list[Word] = []
 
