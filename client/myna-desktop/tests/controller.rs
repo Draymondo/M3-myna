@@ -1810,9 +1810,12 @@ async fn with_auto_stop_off_only_the_user_ends_the_session() {
     assert!(!resynced.load(std::sync::atomic::Ordering::SeqCst));
 }
 
-fn constant(sample: i16, ms: usize) -> Vec<u8> {
-    std::iter::repeat_n(sample.to_le_bytes(), 16 * ms)
-        .flatten()
+/// `ms` of signal at a steady `amplitude`, alternating sign each sample: a
+/// constant would be an offset, which the voice tap's high-pass reads as
+/// silence.
+fn level(amplitude: i16, ms: usize) -> Vec<u8> {
+    (0..16 * ms)
+        .flat_map(|n| (if n % 2 == 0 { amplitude } else { -amplitude }).to_le_bytes())
         .collect()
 }
 
@@ -1825,8 +1828,8 @@ async fn a_noisy_input_raises_the_noise_notice_when_the_session_completes() {
         AutoStop::off(),
         || {
             vec![
-                Step::Bytes(constant(655, 500)),
-                Step::Bytes(constant(1638, 500)),
+                Step::Bytes(level(655, 500)),
+                Step::Bytes(level(1638, 500)),
                 Step::Wait(Duration::from_secs(30)),
             ]
         },
@@ -1847,8 +1850,8 @@ async fn a_quiet_input_completes_without_a_notice() {
         AutoStop::off(),
         || {
             vec![
-                Step::Bytes(constant(3, 500)),
-                Step::Bytes(constant(328, 500)),
+                Step::Bytes(level(3, 500)),
+                Step::Bytes(level(328, 500)),
                 Step::Wait(Duration::from_secs(30)),
             ]
         },

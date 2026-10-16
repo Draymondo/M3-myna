@@ -243,14 +243,15 @@ async fn stats_track_voice_activity() {
     // A quiet lead-in, one second of speech-level signal, then quiet again:
     // the tap marks where sustained voice last ended and reports the input's
     // floor and speech level, so a policy can act on either without samples.
-    let quiet = |ms: usize| -> Vec<u8> {
-        std::iter::repeat_n(3i16.to_le_bytes(), 16 * ms)
-            .flatten()
+    // Both alternate sign each sample: a constant would be an offset, which
+    // the tap's high-pass rightly reads as silence.
+    let level = |amplitude: i16, ms: usize| -> Vec<u8> {
+        (0..16 * ms)
+            .flat_map(|n| (if n % 2 == 0 { amplitude } else { -amplitude }).to_le_bytes())
             .collect()
     };
-    let speech: Vec<u8> = std::iter::repeat_n(328i16.to_le_bytes(), 16_000)
-        .flatten()
-        .collect();
+    let quiet = |ms: usize| level(3, ms);
+    let speech = level(328, 1_000);
     let backend = ScriptedBackend::new(vec![
         Step::Bytes(quiet(300)),
         Step::Bytes(speech),

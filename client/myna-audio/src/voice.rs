@@ -16,6 +16,12 @@ pub const FRAME: Duration = Duration::from_millis(20);
 /// a spoken word does not.
 pub const SUSTAIN: Duration = Duration::from_millis(200);
 
+/// The voice measurements ignore everything below this. Speech carries next
+/// to nothing under it, while a microphone's DC offset and the slow drift of
+/// its bias would otherwise read as one endless word (issue #64: a -13 dBFS
+/// offset on an AMD laptop's internal microphone).
+pub const HIGH_PASS_HZ: f32 = 80.0;
+
 const INITIAL_FLOOR: f32 = 0.003;
 const SPEECH_MIN: f32 = 0.004;
 const SPEECH_MAX: f32 = 0.08;
@@ -104,6 +110,38 @@ impl VoiceTracker {
     /// Capture time at the end of the last frame of sustained voice.
     pub fn last_voice(&self) -> Option<Duration> {
         self.last_voice
+    }
+}
+
+/// One-pole high-pass for the measurement path, one state per interleaved
+/// channel. The PCM itself is never filtered: DSP belongs in the PipeWire
+/// graph. Each channel starts from its first sample, so an offset present
+/// from the start never rings through as a step.
+#[derive(Clone, Debug)]
+pub struct HighPass {
+    pole: f32,
+    /// Per channel: (previous input, previous output).
+    state: Vec<Option<(f32, f32)>>,
+}
+
+impl HighPass {
+    pub fn new(sample_rate_hz: u32, channels: usize) -> Self {
+        let pole =
+            (-2.0 * std::f32::consts::PI * HIGH_PASS_HZ / sample_rate_hz.max(1) as f32).exp();
+        Self {
+            pole,
+            state: vec![None; channels.max(1)],
+        }
+    }
+
+    /// Filter the next sample of `channel` (wrapped into range).
+    pub fn filter(&mut self, channel: usize, x: f32) -> f32 {
+        let channels = self.state.len();
+        let slot = &mut self.state[channel % channels];
+        let (prev_in, prev_out) = slot.unwrap_or((x, 0.0));
+        let y = self.pole * (prev_out + x - prev_in);
+        *slot = Some((x, y));
+        y
     }
 }
 

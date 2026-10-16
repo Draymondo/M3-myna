@@ -20,7 +20,7 @@ Whether the data thread is actually realtime is decided outside the process: lib
 
 The session controller selects a format advertised by the backend. The capture backend produces exactly that format, including downmixing and resampling. The server does not convert audio.
 
-Input devices are identified by stable PipeWire `node.name` values. Live device discovery is separate from capture. DSP such as noise suppression, echo cancellation, filtering, and gain control belongs in the PipeWire graph, not in `myna-audio`.
+Input devices are identified by stable PipeWire `node.name` values. Live device discovery is separate from capture. DSP such as noise suppression, echo cancellation, filtering, and gain control belongs in the PipeWire graph, not in `myna-audio`. The one filter in `myna-audio` is on the measurement path: the voice tap reads levels through an 80 Hz high-pass (`voice::HighPass`), as do the server's pause detector and coverage check (`streaming/highpass.py`), because a microphone's DC offset otherwise reads as endless speech (issue #64). The PCM delivered is untouched.
 
 # Important
 

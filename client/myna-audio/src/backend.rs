@@ -13,7 +13,7 @@ use tokio::sync::watch;
 
 use crate::ring::Ring;
 use crate::stats::AudioStats;
-use crate::voice::{VoiceTracker, FRAME as VOICE_FRAME};
+use crate::voice::{HighPass, VoiceTracker, FRAME as VOICE_FRAME};
 
 /// What to capture. The adapter passes this through from its builder.
 pub struct CaptureSpec {
@@ -50,6 +50,7 @@ pub struct Producer {
     captured: Duration,
     session_peak: f32,
     voice: VoiceTracker,
+    voice_filter: HighPass,
 }
 
 impl Producer {
@@ -73,6 +74,7 @@ impl Producer {
             captured: Duration::ZERO,
             session_peak: 0.0,
             voice: VoiceTracker::default(),
+            voice_filter: HighPass::new(format.sample_rate_hz, format.channels.into()),
         }
     }
 
@@ -134,7 +136,7 @@ impl Producer {
     fn emit(&mut self, data: Bytes) {
         let chunk = PcmChunk::new(data, self.format);
         let (rms, peak, clipped) = levels(&chunk);
-        for (frame_rms, frame) in frame_levels(&chunk) {
+        for (frame_rms, frame) in frame_levels(&chunk, &mut self.voice_filter) {
             self.voice.observe(frame_rms, frame);
         }
         self.captured += chunk.duration();
@@ -193,14 +195,16 @@ fn levels(chunk: &PcmChunk) -> (f32, f32, bool) {
     (rms, peak as f32 / 32768.0, clipped)
 }
 
-/// The chunk cut into [`VOICE_FRAME`]-long frames, each with its RMS and its
-/// actual duration (the last frame of a short final chunk may be shorter).
+/// The chunk cut into [`VOICE_FRAME`]-long frames, each with its RMS above
+/// [`crate::voice::HIGH_PASS_HZ`] (through `filter`, which carries over from
+/// chunk to chunk) and its actual duration (the last frame of a short final chunk may be shorter).
 /// Non-S16LE chunks yield nothing, like [`levels`].
-fn frame_levels(chunk: &PcmChunk) -> Vec<(f32, Duration)> {
+fn frame_levels(chunk: &PcmChunk, filter: &mut HighPass) -> Vec<(f32, Duration)> {
     if chunk.format.sample_width_bytes != 2 {
         return Vec::new();
     }
-    let frame_bytes = (chunk.format.channels as usize * 2).max(1);
+    let channels = (chunk.format.channels as usize).max(1);
+    let frame_bytes = channels * 2;
     let per_frame = (chunk.format.sample_rate_hz as f64 * VOICE_FRAME.as_secs_f64()) as usize;
     let bytes = (per_frame * frame_bytes).max(frame_bytes);
     chunk
@@ -210,13 +214,15 @@ fn frame_levels(chunk: &PcmChunk) -> Vec<(f32, Duration)> {
         .map(|frame| {
             let sum_sq: f64 = frame
                 .chunks_exact(2)
-                .map(|s| {
-                    let v = i16::from_le_bytes([s[0], s[1]]) as f64;
+                .enumerate()
+                .map(|(i, s)| {
+                    let v = i16::from_le_bytes([s[0], s[1]]) as f32 / 32768.0;
+                    let v = filter.filter(i % channels, v) as f64;
                     v * v
                 })
                 .sum();
             let n = (frame.len() / 2) as f64;
-            let rms = ((sum_sq / n).sqrt() / 32768.0) as f32;
+            let rms = (sum_sq / n).sqrt() as f32;
             let duration = Duration::from_secs_f64(
                 frame.len() as f64 / chunk.format.bytes_per_second().max(1) as f64,
             );
@@ -257,21 +263,116 @@ mod tests {
         assert_eq!(levels(&s16_chunk(0, 1600)), (0.0, 0.0, false));
     }
 
+    /// `seconds` of mono 16 kHz audio, sample `n` of which is `f(n / 16 kHz)`.
+    fn s16_signal(seconds: f32, mut f: impl FnMut(f32) -> f32) -> PcmChunk {
+        let count = (seconds * 16_000.0) as usize;
+        let mut data = Vec::with_capacity(count * 2);
+        for n in 0..count {
+            let v = (f(n as f32 / 16_000.0) * 32768.0).round() as i16;
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        PcmChunk::new(data, AudioFormat::default())
+    }
+
+    fn tone(hz: f32, amplitude: f32) -> impl Fn(f32) -> f32 {
+        move |t| amplitude * (2.0 * std::f32::consts::PI * hz * t).sin()
+    }
+
+    fn voice_filter() -> HighPass {
+        HighPass::new(16_000, 1)
+    }
+
     #[test]
     fn a_chunk_cuts_into_twenty_millisecond_frames() {
-        let frames = frame_levels(&s16_chunk(3277, 1600));
+        // A 1 kHz tone of 0.1 amplitude is 0.0707 RMS; speech frequencies
+        // pass the filter.
+        let frames = frame_levels(&s16_signal(0.1, tone(1_000.0, 0.1)), &mut voice_filter());
         assert_eq!(frames.len(), 5);
         for (rms, duration) in frames {
-            assert!((rms - 0.1).abs() < 0.01, "rms {rms}");
+            assert!((rms - 0.0707).abs() < 0.003, "rms {rms}");
             assert_eq!(duration, Duration::from_millis(20));
         }
     }
 
     #[test]
     fn a_short_final_chunk_keeps_its_partial_frame() {
-        let frames = frame_levels(&s16_chunk(0, 400));
+        let frames = frame_levels(&s16_chunk(0, 400), &mut voice_filter());
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[1].1, Duration::from_millis(5));
+    }
+
+    #[test]
+    fn a_dc_offset_is_not_a_level() {
+        // Two chunks, so the filter state crosses a chunk boundary unbroken.
+        let mut filter = voice_filter();
+        for _ in 0..2 {
+            for (rms, _) in frame_levels(&s16_chunk(-7168, 1600), &mut filter) {
+                assert!(rms < 1e-4, "rms {rms}");
+            }
+        }
+    }
+
+    #[test]
+    fn rumble_below_the_cutoff_is_attenuated() {
+        let frames = frame_levels(&s16_signal(1.0, tone(15.0, 0.1)), &mut voice_filter());
+        let loudest = frames.iter().map(|(rms, _)| *rms).fold(0.0, f32::max);
+        assert!(loudest < 0.02, "loudest {loudest}");
+    }
+
+    #[test]
+    fn an_offset_microphone_in_a_quiet_room_is_not_voice() {
+        // Issue #64's microphone: a -13 dBFS offset that drifts, under
+        // -60 dBFS of room tone. Unfiltered it reads as a word from 200 ms.
+        let mut noise = 1u32;
+        let room = move |t: f32| {
+            noise = noise.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            -0.219
+                + 0.008 * (2.0 * std::f32::consts::PI * 15.0 * t).sin()
+                + 0.001 * (noise as f32 / u32::MAX as f32 - 0.5)
+        };
+        let mut voice = VoiceTracker::default();
+        for (rms, frame) in frame_levels(&s16_signal(60.0, room), &mut voice_filter()) {
+            voice.observe(rms, frame);
+        }
+        assert_eq!(voice.last_voice(), None);
+    }
+
+    #[test]
+    fn speech_over_an_offset_is_still_voice() {
+        let speech = |t: f32| {
+            -0.219
+                + if t > 0.5 {
+                    0.05 * (2.0 * std::f32::consts::PI * 300.0 * t).sin()
+                } else {
+                    0.0
+                }
+        };
+        let mut voice = VoiceTracker::default();
+        for (rms, frame) in frame_levels(&s16_signal(1.5, speech), &mut voice_filter()) {
+            voice.observe(rms, frame);
+        }
+        assert_eq!(voice.last_voice(), Some(Duration::from_millis(1500)));
+    }
+
+    #[test]
+    fn stereo_channels_are_filtered_apart() {
+        // Left sits on an offset, right carries a tone: interleaved through
+        // one shared state the offset would leak in as a 8 kHz square wave.
+        let mut data = Vec::new();
+        for n in 0..1600 {
+            let right = (tone(1_000.0, 0.1)(n as f32 / 16_000.0) * 32768.0) as i16;
+            data.extend_from_slice(&(-7168i16).to_le_bytes());
+            data.extend_from_slice(&right.to_le_bytes());
+        }
+        let format = AudioFormat {
+            channels: 2,
+            ..AudioFormat::default()
+        };
+        let frames = frame_levels(&PcmChunk::new(data, format), &mut HighPass::new(16_000, 2));
+        for (rms, _) in frames {
+            // Both channels' samples in one RMS: the tone's 0.0707 over two.
+            assert!((rms - 0.05).abs() < 0.003, "rms {rms}");
+        }
     }
 
     #[test]
@@ -283,6 +384,6 @@ mod tests {
                 ..AudioFormat::default()
             },
         );
-        assert!(frame_levels(&chunk).is_empty());
+        assert!(frame_levels(&chunk, &mut voice_filter()).is_empty());
     }
 }
