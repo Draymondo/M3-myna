@@ -99,10 +99,13 @@ MEMORY_PRESSURE_MESSAGE = (
     "applications, or using a smaller model, should fix it."
 )
 
+# Covers a driver that is missing or too old, a GPU the runtime cannot drive,
+# and one that ran out of memory mid-session (another application took it).
 GPU_UNAVAILABLE_MESSAGE = (
     "The NVIDIA GPU could not be used, so the speech model is running on the "
-    "CPU, which is slower. Installing or updating the NVIDIA driver, then "
-    "restarting, should fix it."
+    "CPU, which is slower. Its driver may be missing or out of date, or other "
+    "applications may be using its memory. Updating the NVIDIA driver or "
+    "closing those applications, then restarting, should fix it."
 )
 
 
