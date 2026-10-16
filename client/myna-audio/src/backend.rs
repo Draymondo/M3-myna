@@ -51,6 +51,9 @@ pub struct Producer {
     session_peak: f32,
     voice: VoiceTracker,
     voice_filter: HighPass,
+    /// Sum and count of every sample this session, for [`AudioStats::offset`].
+    sample_sum: f64,
+    sample_count: u64,
 }
 
 impl Producer {
@@ -75,6 +78,8 @@ impl Producer {
             session_peak: 0.0,
             voice: VoiceTracker::default(),
             voice_filter: HighPass::new(format.sample_rate_hz, format.channels.into()),
+            sample_sum: 0.0,
+            sample_count: 0,
         }
     }
 
@@ -136,6 +141,9 @@ impl Producer {
     fn emit(&mut self, data: Bytes) {
         let chunk = PcmChunk::new(data, self.format);
         let (rms, peak, clipped) = levels(&chunk);
+        let (sum, count) = sample_sum(&chunk);
+        self.sample_sum += sum;
+        self.sample_count += count;
         for (frame_rms, frame) in frame_levels(&chunk, &mut self.voice_filter) {
             self.voice.observe(frame_rms, frame);
         }
@@ -152,6 +160,7 @@ impl Producer {
             captured: self.captured,
             noise_floor: self.voice.noise_floor(),
             speech_level: self.voice.speech_level(),
+            offset: (self.sample_sum / self.sample_count.max(1) as f64) as f32,
             last_voice: self.voice.last_voice(),
         });
     }
@@ -193,6 +202,20 @@ fn levels(chunk: &PcmChunk) -> (f32, f32, bool) {
     let n = (chunk.data.len() / 2) as f64;
     let rms = ((sum_sq / n).sqrt() / 32768.0) as f32;
     (rms, peak as f32 / 32768.0, clipped)
+}
+
+/// The chunk's samples summed (linear full scale) and counted; S16LE only,
+/// like [`levels`].
+fn sample_sum(chunk: &PcmChunk) -> (f64, u64) {
+    if chunk.format.sample_width_bytes != 2 {
+        return (0.0, 0);
+    }
+    let samples = chunk.data.chunks_exact(2);
+    let count = samples.len() as u64;
+    let sum = samples
+        .map(|s| i16::from_le_bytes([s[0], s[1]]) as f64 / 32768.0)
+        .sum();
+    (sum, count)
 }
 
 /// The chunk cut into [`VOICE_FRAME`]-long frames, each with its RMS above
@@ -376,6 +399,14 @@ mod tests {
     }
 
     #[test]
+    fn the_sample_sum_is_signed_and_counts_every_sample() {
+        let (sum, count) = sample_sum(&s16_chunk(-7168, 1600));
+        assert_eq!(count, 1600);
+        assert!((sum / count as f64 + 0.21875).abs() < 1e-9, "{sum}");
+        assert!(sample_sum(&s16_signal(0.1, tone(1_000.0, 0.1))).0.abs() < 0.01);
+    }
+
+    #[test]
     fn wide_samples_yield_no_frames() {
         let chunk = PcmChunk::new(
             vec![0u8; 64],
@@ -385,5 +416,6 @@ mod tests {
             },
         );
         assert!(frame_levels(&chunk, &mut voice_filter()).is_empty());
+        assert_eq!(sample_sum(&chunk), (0.0, 0));
     }
 }

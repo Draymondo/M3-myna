@@ -30,6 +30,10 @@ pub struct AudioStats {
     /// The loudest smoothed level heard while voice was sustained; `0.0`
     /// until voice has been heard.
     pub speech_level: f32,
+    /// The mean sample this session, signed linear full scale: the input's
+    /// DC offset. A healthy input sits within a thousandth of zero; issue
+    /// #64's microphone sat at -0.22.
+    pub offset: f32,
     /// Capture time at which sustained voice was last heard (see
     /// [`crate::voice::VoiceTracker`]); `None` until it has been. Measured in
     /// captured audio, not wall-clock, so a stalled device does not read as

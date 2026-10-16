@@ -279,6 +279,31 @@ async fn stats_track_voice_activity() {
 }
 
 #[tokio::test]
+async fn stats_report_the_session_offset() {
+    // Half a second at -0.22 of full scale, then half a second at zero: the
+    // offset is the whole session's mean, not the last chunk's.
+    let at = |sample: i16| -> Vec<u8> {
+        std::iter::repeat_n(sample.to_le_bytes(), 8_000)
+            .flatten()
+            .collect()
+    };
+    let backend = ScriptedBackend::new(vec![Step::Bytes(at(-7168)), Step::Bytes(at(0))]);
+    let source = CaptureSource::builder(FMT)
+        .backend(Box::new(backend))
+        .build();
+    let mut stats = source.stats();
+    let _stream = Box::new(source).capture();
+
+    let snapshot = wait_stats(&mut stats, |s| s.captured >= secs(1.0)).await;
+    assert!(
+        (snapshot.offset + 0.109_375).abs() < 1e-6,
+        "{}",
+        snapshot.offset
+    );
+    assert_eq!(snapshot.last_voice, None, "an offset is not voice");
+}
+
+#[tokio::test]
 async fn short_final_chunk_flushes_whole_frames_only() {
     // Stereo (4-byte frames): 402 bytes pushed → 400 delivered, the trailing
     // partial frame dropped, never padded (§4).
