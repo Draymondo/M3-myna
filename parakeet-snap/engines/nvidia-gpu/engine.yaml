@@ -15,11 +15,18 @@ vendor: Canonical Ltd
 # before `--auto` (myna.server.cuda_probe); on a GPU or driver CUDA 13 cannot
 # use after that, the server serves the fp32 graphs on the CPU and warns each
 # session.
+#
+# The fp32 encoder peaks at 3.6 GB over a 302 s streamed dictation (RTX 4080).
+# A 4 GB card loads it and serves short dictations, then runs out of memory
+# 35-40 s into a long one and loses it (T1000, T600, no desktop running);
+# that is a runtime failure, past the CPU fallback. 5G passes 6 GB cards,
+# which report a little under 6 GiB, and sends 4 GB ones to the CPU engine.
 devices:
   allof:
     - type: gpu
       vendor-id: 0x10de # NVIDIA Corporation
       compute-capability: ">=7.5"
+      vram: 5G
   anyof:
     - type: cpu
       architecture: amd64

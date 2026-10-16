@@ -39,11 +39,13 @@ cache lacks them; it needs NeMo and torch, which it installs into its own uv
 environment (about 2 GB, locked in `export_parakeet_onnx.py.lock`), and a 2.4 GB
 checkpoint download.
 
-Needs an NVIDIA driver of 580 or later (CUDA 13) and a Turing or newer GPU.
-modelctl matches the engine on the GPU's compute capability (7.5 or newer,
-read through `nvidia-smi`), and the install and hardware-observe hooks ask the
-driver for its CUDA version first (`python3 -m myna.server.cuda_probe 13.0`),
-selecting `cpu` when either falls short. When the CUDA provider cannot load or
+Needs an NVIDIA driver of 580 or later (CUDA 13) and a Turing or newer GPU
+with more than 4 GB of memory. modelctl matches the engine on the GPU's compute
+capability (7.5 or newer) and memory (5G or more), both read through
+`nvidia-smi`; a 4 GB card runs out of memory partway through a long dictation.
+The install and hardware-observe hooks ask the driver for its CUDA version
+first (`python3 -m myna.server.cuda_probe 13.0`), selecting `cpu` when any of
+these falls short. When the CUDA provider cannot load or
 start later (a driver removed or downgraded since), the server runs the fp32
 graphs on the CPU, slower, and tells the user each session; `use-engine cpu`
 switches to the faster int8 graphs for good.
