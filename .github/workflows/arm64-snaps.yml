@@ -169,4 +169,6 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y squashfs-tools
           sudo snap install snapcraft --classic
-          dev/publish-snap.sh ${{ matrix.snap }}-snap latest/edge
+          # "edge", not "latest/edge": the credential's channel restriction matches the
+          # string, and refuses the spelled-out form of the same channel.
+          dev/publish-snap.sh ${{ matrix.snap }}-snap edge
