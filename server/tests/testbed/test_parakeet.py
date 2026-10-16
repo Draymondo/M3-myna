@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from types import SimpleNamespace
 
@@ -870,6 +871,88 @@ def test_an_encoder_that_fails_on_the_cpu_too_is_not_a_gpu_fault(tmp_path, monke
 
     with pytest.raises(_OrtFail, match="INVALID_PROTOBUF"):
         _ParakeetOnnx(str(tmp_path), device="cuda")
+
+
+class _SmallGpuSession(_FakeSession):
+    """A session on a GPU with too little memory for a long window: CUDA
+    runs fail the way ORT's arena does (T1000, 4 GB), CPU runs work."""
+
+    runs: list[tuple[str, str]] = []
+
+    def run(self, outputs, feeds, run_options=None):
+        on = "cuda" if CUDA_PROVIDER in self.requested_providers else "cpu"
+        name = os.path.basename(self.path)
+        self.runs.append((name, on))
+        if name == "nemo128.onnx":
+            return [np.zeros((1, 128, 8), dtype=np.float32), np.array([8], dtype=np.int64)]
+        if on == "cuda":
+            raise _OrtFail(
+                "[ONNXRuntimeError] : 1 : FAIL : Non-zero status code returned while "
+                "running Mul node. Name:'/pre_encode/conv/Mul_7' Status Message: "
+                "bfc_arena.cc:358 Failed to allocate memory for requested buffer of size 72155136"
+            )
+        return [np.zeros((1, 1024, 2), dtype=np.float32), np.array([2], dtype=np.int64)]
+
+
+def _small_gpu_model(tmp_path, monkeypatch, session=_SmallGpuSession, device="cuda"):
+    _touch(tmp_path, FP32_ENCODER_FILE, FP32_JOINT_FILE)
+    (tmp_path / "vocab.txt").write_text("<blk> 0\n", encoding="utf-8")
+    _fake_ort(monkeypatch, session)
+    session.runs = []
+    model = _ParakeetOnnx(str(tmp_path), device=device, encoder_threads=3)
+    decoded = []
+    monkeypatch.setattr(
+        model, "_decode_sequence", lambda enc, n: decoded.append(n) or (["x"], [0.0])
+    )
+    return model, decoded
+
+
+def test_a_gpu_that_runs_out_of_memory_mid_session_finishes_on_the_cpu(tmp_path, monkeypatch):
+    """A 4 GB card loads the fp32 encoder, then fails 35 s into a long
+    dictation: the window is decoded on the CPU, and so is every later one."""
+    model, decoded = _small_gpu_model(tmp_path, monkeypatch)
+    assert model.device == "cuda" and not model.gpu_unavailable
+
+    assert model.transcribe(np.zeros(16000, dtype=np.float32)) == (["x"], [0.0])
+
+    assert decoded == [2]
+    assert model.gpu_unavailable
+    assert model.device == "cpu"
+    assert model._encoder.requested_providers == ["CPUExecutionProvider"]
+    assert model._encoder.options.intra_op_num_threads == 3
+    assert model._decoder_joint.requested_providers == ["CPUExecutionProvider"]
+    assert model._encoder_run_options is None
+    model.transcribe(np.zeros(16000, dtype=np.float32))
+    encoder_runs = [on for name, on in _SmallGpuSession.runs if name == FP32_ENCODER_FILE]
+    assert encoder_runs == ["cuda", "cpu", "cpu"]
+
+
+def test_a_run_that_fails_on_the_cpu_too_raises(tmp_path, monkeypatch):
+    class _BrokenEverywhere(_SmallGpuSession):
+        def run(self, outputs, feeds, run_options=None):
+            if os.path.basename(self.path) == FP32_ENCODER_FILE:
+                raise _OrtFail("[ONNXRuntimeError] : 2 : INVALID_ARGUMENT")
+            return super().run(outputs, feeds, run_options)
+
+    model, _ = _small_gpu_model(tmp_path, monkeypatch, _BrokenEverywhere)
+
+    with pytest.raises(_OrtFail, match="INVALID_ARGUMENT"):
+        model.transcribe(np.zeros(16000, dtype=np.float32))
+
+
+def test_a_cpu_run_failure_is_not_retried(tmp_path, monkeypatch):
+    class _BrokenCpu(_SmallGpuSession):
+        def run(self, outputs, feeds, run_options=None):
+            if os.path.basename(self.path) == FP32_ENCODER_FILE:
+                self.runs.append((FP32_ENCODER_FILE, "cpu"))
+                raise _OrtFail("[ONNXRuntimeError] : 2 : INVALID_ARGUMENT")
+            return super().run(outputs, feeds, run_options)
+
+    model, _ = _small_gpu_model(tmp_path, monkeypatch, _BrokenCpu, device="cpu")
+
+    with pytest.raises(_OrtFail):
+        model.transcribe(np.zeros(16000, dtype=np.float32))
+    assert [r for r in _BrokenCpu.runs if r[0] == FP32_ENCODER_FILE] == [(FP32_ENCODER_FILE, "cpu")]
 
 
 def test_a_loaded_cuda_provider_is_not_reported_unavailable(tmp_path, monkeypatch):

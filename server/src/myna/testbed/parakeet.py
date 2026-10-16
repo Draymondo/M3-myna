@@ -67,6 +67,7 @@ import asyncio
 import logging
 import os
 import re
+import threading
 from collections.abc import AsyncIterator
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
@@ -494,8 +495,10 @@ class _ParakeetOnnx:
             _log.warning("parakeet: the CUDA provider did not load; serving on the CPU")
             device, providers = "cpu", cpu
         self.device: Device = device
+        self._files, self._encoder_opts, self._joint_opts = files, encoder_opts, opts(1)
+        self._device_lock = threading.Lock()
         self._decoder_joint = ort.InferenceSession(
-            files.decoder_joint, opts(1), providers=providers
+            files.decoder_joint, self._joint_opts, providers=providers
         )
         if device == "cuda":
             _require_cuda(self._decoder_joint, "decoder_joint")
@@ -646,7 +649,43 @@ class _ParakeetOnnx:
         return tokens, timestamps
 
     def transcribe(self, samples: NDArray[np.float32]) -> tuple[list[str], list[float]]:
-        """float32 mono 16 kHz → (tokens, token timestamps in region seconds)."""
+        """float32 mono 16 kHz → (tokens, token timestamps in region seconds).
+
+        A GPU that started can still fail a run: a 4 GB card loads the fp32
+        encoder, then runs out of memory on a long dictation's window. Decode
+        that window, and every later one, on the CPU; a run that fails there
+        too is not the GPU's, and raises.
+        """
+        on = self.device
+        try:
+            return self._transcribe(samples)
+        except Exception:
+            if on != "cuda":
+                raise
+            _log.exception("parakeet: a run failed on the GPU; serving on the CPU")
+            self._serve_on_cpu()
+            return self._transcribe(samples)
+
+    def _serve_on_cpu(self) -> None:
+        """Rebuild the encoder and joint on the CPU, once, however many
+        sessions hit the failure; the CUDA sessions go with their memory."""
+        import onnxruntime as ort
+
+        with self._device_lock:
+            if self.device == "cpu":
+                return
+            cpu = ["CPUExecutionProvider"]
+            self._encoder = ort.InferenceSession(
+                self._files.encoder, self._encoder_opts, providers=cpu
+            )
+            self._decoder_joint = ort.InferenceSession(
+                self._files.decoder_joint, self._joint_opts, providers=cpu
+            )
+            self._encoder_run_options = None
+            self.gpu_unavailable = True
+            self.device = "cpu"
+
+    def _transcribe(self, samples: NDArray[np.float32]) -> tuple[list[str], list[float]]:
         with _zone("transcribe"):
             waveforms = samples.reshape(1, -1).astype(np.float32)
             waveforms_lens = np.array([samples.shape[0]], dtype=np.int64)
