@@ -1,7 +1,7 @@
 name: cpu
 summary: Parakeet TDT int8 via onnxruntime on CPU
 description: |
-  Runs Parakeet TDT 0.6B v3 (int8 ONNX) with onnxruntime on amd64 CPUs,
+  Runs Parakeet TDT 0.6B v3 (int8 ONNX) with onnxruntime on amd64/arm64 CPUs,
   streaming chunked-commit transcription over the Myna Unix-socket
   session API.
 vendor: Canonical Ltd
@@ -10,6 +10,8 @@ devices:
   anyof:
     - type: cpu
       architecture: amd64
+    - type: cpu
+      architecture: arm64
 
 runtime: onnxruntime-cpu
 

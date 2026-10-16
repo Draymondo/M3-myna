@@ -17,6 +17,7 @@ compression: lzo
 
 platforms:
   amd64:
+  arm64:
 
 environment:
   # The staged libpipewire must find its SPA plugins inside the snap — its

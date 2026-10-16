@@ -32,6 +32,7 @@ compression: lzo
 
 platforms:
   amd64:
+  arm64:
 
 environment:
   # Path modelctl/runtimes use to reach installed components, matching the
