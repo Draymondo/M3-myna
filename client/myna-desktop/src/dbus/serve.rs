@@ -66,6 +66,10 @@ struct ServedState {
     /// Always `control`, for Myna Settings releases that still ask.
     activation: String,
     audio_dropped_not_active: u64,
+    /// The last session's input levels; NaN until a session has ended.
+    input_offset: f64,
+    input_noise_floor: f64,
+    input_speech_level: f64,
     /// The latest failure's headline, empty until one happens. Sticky: see
     /// [`crate::dbus::publish_last_error`].
     last_error: String,
@@ -86,6 +90,9 @@ impl ServedState {
             hud_style: myna_core::Settings::load()
                 .hud_style
                 .unwrap_or_else(|| myna_core::settings::DEFAULT_HUD_STYLE.to_string()),
+            input_offset: f64::NAN,
+            input_noise_floor: f64::NAN,
+            input_speech_level: f64::NAN,
             ..Default::default()
         }
     }
@@ -267,6 +274,35 @@ impl DictationObject {
             .lock()
             .expect("served state poisoned")
             .audio_dropped_not_active
+    }
+
+    /// `InputOffset`: the last session's mean sample, signed linear full
+    /// scale (its DC offset); NaN until a session has ended.
+    #[zbus(property)]
+    async fn input_offset(&self) -> f64 {
+        self.served
+            .lock()
+            .expect("served state poisoned")
+            .input_offset
+    }
+
+    /// `InputNoiseFloor`: the quietest the last session's input got.
+    #[zbus(property)]
+    async fn input_noise_floor(&self) -> f64 {
+        self.served
+            .lock()
+            .expect("served state poisoned")
+            .input_noise_floor
+    }
+
+    /// `InputSpeechLevel`: the loudest sustained voice in the last session,
+    /// 0 when none was heard.
+    #[zbus(property)]
+    async fn input_speech_level(&self) -> f64 {
+        self.served
+            .lock()
+            .expect("served state poisoned")
+            .input_speech_level
     }
 
     #[zbus(property)]
@@ -553,6 +589,9 @@ impl Bus for ZbusBus {
                     ("AudioDroppedNotActive", PropertyValue::U64(v)) => {
                         served.audio_dropped_not_active = *v
                     }
+                    ("InputOffset", PropertyValue::F64(v)) => served.input_offset = *v,
+                    ("InputNoiseFloor", PropertyValue::F64(v)) => served.input_noise_floor = *v,
+                    ("InputSpeechLevel", PropertyValue::F64(v)) => served.input_speech_level = *v,
                     ("LastError", PropertyValue::Str(s)) => served.last_error = s.clone(),
                     ("LastErrorDetail", PropertyValue::Str(s)) => {
                         served.last_error_detail = s.clone()
@@ -579,6 +618,9 @@ impl Bus for ZbusBus {
                 "HudStyle" => iface.hud_style_changed(emitter).await,
                 "Activation" => iface.activation_changed(emitter).await,
                 "AudioDroppedNotActive" => iface.audio_dropped_not_active_changed(emitter).await,
+                "InputOffset" => iface.input_offset_changed(emitter).await,
+                "InputNoiseFloor" => iface.input_noise_floor_changed(emitter).await,
+                "InputSpeechLevel" => iface.input_speech_level_changed(emitter).await,
                 "LastError" => iface.last_error_changed(emitter).await,
                 "LastErrorDetail" => iface.last_error_detail_changed(emitter).await,
                 "LastErrorTime" => iface.last_error_time_changed(emitter).await,

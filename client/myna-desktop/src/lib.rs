@@ -38,7 +38,7 @@ pub use controller::{
     DesktopController, DesktopControllerBuilder, DictationState, InputQuality, Session,
     SessionFactory, SessionRun,
 };
-pub use indicator::{Indicator, IndicatorState};
+pub use indicator::{Indicator, IndicatorState, InputLevels};
 pub use inject::{FocusEvent, InjectError, Injector, Target};
 pub use live::Live;
 pub use shortcut::{Trigger, TriggerEdge};

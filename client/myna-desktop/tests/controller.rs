@@ -1791,6 +1791,40 @@ async fn a_toggle_session_ends_itself_after_the_silence_timeout() {
 }
 
 #[tokio::test]
+async fn an_offset_microphone_still_ends_itself_after_the_silence_timeout() {
+    // Issue #64: a -13 dBFS DC offset read as endless voice, so the session
+    // ran until the user stopped it. The offset is published for Diagnostics.
+    let offset = || {
+        vec![
+            Step::Bytes(
+                std::iter::repeat_n((-7168i16).to_le_bytes(), 16_000)
+                    .flatten()
+                    .collect(),
+            ),
+            Step::Wait(Duration::from_secs(30)),
+        ]
+    };
+    let trigger = ProbeTrigger::new(Then::WaitForResync);
+    let indicator = MockIndicator::new();
+    let levels = indicator.input_levels();
+    let mut controller = DesktopController::builder()
+        .trigger(trigger)
+        .injector(MockInjector::new())
+        .indicator(indicator)
+        .session(observed_session(offset))
+        .auto_stop(AutoStop::toggle(Duration::from_millis(500)))
+        .build();
+    tokio::time::timeout(Duration::from_secs(10), controller.run())
+        .await
+        .expect("the silence timeout must end the session despite the offset");
+
+    let levels = levels.lock().unwrap();
+    assert_eq!(levels.len(), 1);
+    assert!((levels[0].offset + 0.21875).abs() < 1e-6, "{:?}", levels[0]);
+    assert_eq!(levels[0].speech_level, 0.0);
+}
+
+#[tokio::test]
 async fn with_auto_stop_off_only_the_user_ends_the_session() {
     // Hold-to-talk's contract: a second of silence sits there until the
     // user's own Release, and no resync happens because that Release was

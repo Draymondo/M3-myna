@@ -92,6 +92,19 @@ pub fn status_message(state: &IndicatorState, ready_seen: bool) -> String {
     }
 }
 
+/// A finished session's input levels, linear full scale: enough for
+/// Diagnostics to tell a broken microphone from a noisy room. Levels only,
+/// never audio.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InputLevels {
+    /// The mean sample, signed: the input's DC offset.
+    pub offset: f32,
+    /// The quietest the input got.
+    pub noise_floor: f32,
+    /// The loudest sustained voice; `0.0` when none was heard.
+    pub speech_level: f32,
+}
+
 /// The activity-indicator seam. `set_state` is idempotent per state.
 #[async_trait]
 pub trait Indicator: Send {
@@ -103,6 +116,9 @@ pub trait Indicator: Send {
     /// content - and the one capture-health fact no reader outside the daemon
     /// can obtain for itself.
     async fn set_audio_drops(&mut self, _not_active: u64) {}
+
+    /// Publish the input levels of the session that just ended.
+    async fn set_input_levels(&mut self, _levels: InputLevels) {}
 
     /// Record a failure for later diagnosis: the headline the user was shown
     /// and the untranslated detail behind it. Kept after the state moves on;
@@ -118,6 +134,10 @@ impl Indicator for Box<dyn Indicator> {
 
     async fn set_audio_drops(&mut self, not_active: u64) {
         (**self).set_audio_drops(not_active).await;
+    }
+
+    async fn set_input_levels(&mut self, levels: InputLevels) {
+        (**self).set_input_levels(levels).await;
     }
 
     async fn set_last_error(&mut self, headline: &str, detail: &str) {

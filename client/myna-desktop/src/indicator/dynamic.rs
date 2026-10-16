@@ -49,6 +49,10 @@ impl<N: Indicator> Indicator for DynamicIndicator<N> {
         self.dbus.set_audio_drops(not_active).await;
     }
 
+    async fn set_input_levels(&mut self, levels: super::InputLevels) {
+        self.dbus.set_input_levels(levels).await;
+    }
+
     async fn set_last_error(&mut self, headline: &str, detail: &str) {
         self.dbus.set_last_error(headline, detail).await;
     }

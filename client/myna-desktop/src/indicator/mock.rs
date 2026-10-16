@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use super::{Indicator, IndicatorState};
+use super::{Indicator, IndicatorState, InputLevels};
 
 /// A hermetic [`Indicator`] that records every state it is shown. Clone the log
 /// handle (`.log()`) before moving the mock into the controller.
@@ -17,6 +17,7 @@ use super::{Indicator, IndicatorState};
 pub struct MockIndicator {
     log: Arc<Mutex<Vec<IndicatorState>>>,
     last_errors: Arc<Mutex<Vec<(String, String)>>>,
+    input_levels: Arc<Mutex<Vec<InputLevels>>>,
 }
 
 impl MockIndicator {
@@ -34,6 +35,11 @@ impl MockIndicator {
     pub fn last_errors(&self) -> Arc<Mutex<Vec<(String, String)>>> {
         self.last_errors.clone()
     }
+
+    /// A shared handle to every session's published input levels, in order.
+    pub fn input_levels(&self) -> Arc<Mutex<Vec<InputLevels>>> {
+        self.input_levels.clone()
+    }
 }
 
 #[async_trait]
@@ -47,5 +53,9 @@ impl Indicator for MockIndicator {
             .lock()
             .unwrap()
             .push((headline.to_string(), detail.to_string()));
+    }
+
+    async fn set_input_levels(&mut self, levels: InputLevels) {
+        self.input_levels.lock().unwrap().push(levels);
     }
 }

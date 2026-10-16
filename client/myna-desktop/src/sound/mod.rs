@@ -105,6 +105,10 @@ impl<I: Indicator> Indicator for Chiming<I> {
         self.inner.set_audio_drops(not_active).await;
     }
 
+    async fn set_input_levels(&mut self, levels: crate::indicator::InputLevels) {
+        self.inner.set_input_levels(levels).await;
+    }
+
     async fn set_last_error(&mut self, headline: &str, detail: &str) {
         self.inner.set_last_error(headline, detail).await;
     }

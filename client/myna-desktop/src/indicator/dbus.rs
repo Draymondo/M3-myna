@@ -214,6 +214,18 @@ impl Indicator for DbusIndicator {
             .await;
     }
 
+    async fn set_input_levels(&mut self, levels: super::InputLevels) {
+        let mut bus = self.bus.lock().await;
+        for (name, value) in [
+            ("InputOffset", levels.offset),
+            ("InputNoiseFloor", levels.noise_floor),
+            ("InputSpeechLevel", levels.speech_level),
+        ] {
+            bus.set_property(name, PropertyValue::F64(value.into()))
+                .await;
+        }
+    }
+
     /// Outside [`Self::publish`]'s dedup and untouched by the auto-hide: a
     /// second failure with the same headline still updates the detail and
     /// time, and Diagnostics opened after the pill is gone still reads it.
@@ -241,6 +253,35 @@ mod tests {
         assert_eq!(
             fake.property("AudioDroppedNotActive"),
             Some(PropertyValue::U64(3))
+        );
+        assert!(fake.property("State").is_none());
+    }
+
+    #[tokio::test]
+    async fn input_levels_are_published_as_three_doubles() {
+        let fake = FakeBus::new();
+        let service = crate::dbus::DictationService::new(fake.clone());
+        let mut indicator = DbusIndicator::new(service.bus(), Readiness::default());
+
+        indicator
+            .set_input_levels(super::super::InputLevels {
+                offset: -0.25,
+                noise_floor: 0.001,
+                speech_level: 0.0,
+            })
+            .await;
+
+        assert_eq!(
+            fake.property("InputOffset"),
+            Some(PropertyValue::F64(-0.25))
+        );
+        assert_eq!(
+            fake.property("InputNoiseFloor"),
+            Some(PropertyValue::F64(f64::from(0.001f32)))
+        );
+        assert_eq!(
+            fake.property("InputSpeechLevel"),
+            Some(PropertyValue::F64(0.0))
         );
         assert!(fake.property("State").is_none());
     }

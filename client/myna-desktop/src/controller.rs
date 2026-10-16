@@ -22,7 +22,7 @@ use gettextrs::gettext;
 use myna_audio::AudioStats;
 use tokio::sync::{mpsc, watch};
 
-use crate::indicator::{Indicator, IndicatorState};
+use crate::indicator::{Indicator, IndicatorState, InputLevels};
 use crate::live::Live;
 use async_trait::async_trait;
 use myna_orchestrator::{
@@ -782,6 +782,16 @@ impl DesktopController {
         // One owner, one release: every terminal path gives the target up
         // here, exactly once, before the outcome is reported.
         target.release().await;
+        let heard = *stats.borrow();
+        if heard.captured > Duration::ZERO {
+            self.indicator
+                .set_input_levels(InputLevels {
+                    offset: heard.offset,
+                    noise_floor: heard.noise_floor,
+                    speech_level: heard.speech_level,
+                })
+                .await;
+        }
 
         // Terminal disposition.
         if ending == Ending::TargetGone {
