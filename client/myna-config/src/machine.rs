@@ -253,6 +253,30 @@ pub struct AudioDrops {
     pub not_active: u64,
 }
 
+/// The last dictation's input levels, in whole dBFS, from the daemon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputLevels {
+    /// The DC offset's magnitude.
+    pub offset_db: i32,
+    /// The quietest the input got.
+    pub floor_db: i32,
+    /// The loudest sustained voice; `None` when none was heard.
+    pub speech_db: Option<i32>,
+}
+
+/// What the daemon says about its input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputReport {
+    /// No dictation has ended since the daemon started.
+    NotYet,
+    Levels(InputLevels),
+}
+
+/// Whole dBFS of a linear full-scale level, -120 for silence.
+pub fn dbfs(level: f64) -> i32 {
+    (20.0 * level.abs().max(1e-6).log10()).round() as i32
+}
+
 /// The daemon's latest failure, kept after its HUD pill is gone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LastError {
@@ -270,6 +294,8 @@ pub struct DaemonReport {
     /// `None` on a daemon older than the property - the report omits the line
     /// rather than claiming a clean session it cannot see.
     pub drops: Option<AudioDrops>,
+    /// `None` on a daemon older than the properties.
+    pub input: Option<InputReport>,
     /// `None` when nothing has failed, or the daemon predates the property.
     pub last_error: Option<LastError>,
 }
@@ -313,6 +339,25 @@ fn parse_daemon_report(all: &gio::glib::Variant) -> DaemonReport {
         .ok()
         .flatten()
         .map(|not_active| AudioDrops { not_active });
+    let level = |name: &str| properties.lookup::<f64>(name).ok().flatten();
+    let input = match (
+        level("InputOffset"),
+        level("InputNoiseFloor"),
+        level("InputSpeechLevel"),
+    ) {
+        (Some(offset), Some(floor), Some(speech)) => {
+            Some(if [offset, floor, speech].iter().all(|v| v.is_finite()) {
+                InputReport::Levels(InputLevels {
+                    offset_db: dbfs(offset),
+                    floor_db: dbfs(floor),
+                    speech_db: (speech > 0.0).then(|| dbfs(speech)),
+                })
+            } else {
+                InputReport::NotYet
+            })
+        }
+        _ => None,
+    };
     let text = |name: &str| properties.lookup::<String>(name).ok().flatten();
     let time = properties.lookup::<i64>("LastErrorTime").ok().flatten();
     let last_error = match (text("LastError"), time) {
@@ -323,7 +368,11 @@ fn parse_daemon_report(all: &gio::glib::Variant) -> DaemonReport {
         }),
         _ => None,
     };
-    DaemonReport { drops, last_error }
+    DaemonReport {
+        drops,
+        input,
+        last_error,
+    }
 }
 
 fn local_time(usec: i64) -> String {
@@ -378,6 +427,30 @@ mod tests {
         assert_eq!(last.headline, "Model not running");
         assert_eq!(last.detail, "x is connected");
         assert!(last.at.starts_with("2025-"), "{}", last.at);
+    }
+
+    #[test]
+    fn input_levels_read_as_whole_dbfs_and_nan_as_not_yet() {
+        let report = parse_daemon_report(&reply(&[
+            ("InputOffset", (-0.219f64).to_variant()),
+            ("InputNoiseFloor", 0.001f64.to_variant()),
+            ("InputSpeechLevel", 0.0f64.to_variant()),
+        ]));
+        assert_eq!(
+            report.input,
+            Some(InputReport::Levels(InputLevels {
+                offset_db: -13,
+                floor_db: -60,
+                speech_db: None,
+            }))
+        );
+        let report = parse_daemon_report(&reply(&[
+            ("InputOffset", f64::NAN.to_variant()),
+            ("InputNoiseFloor", f64::NAN.to_variant()),
+            ("InputSpeechLevel", f64::NAN.to_variant()),
+        ]));
+        assert_eq!(report.input, Some(InputReport::NotYet));
+        assert_eq!(dbfs(0.0), -120);
     }
 
     #[test]

@@ -11,7 +11,8 @@
 use std::time::Duration;
 
 use crate::machine::{
-    bytes, AudioDrops, DaemonReport, LastError, MachineFacts, ProcessMemory, SystemFacts,
+    bytes, AudioDrops, DaemonReport, InputLevels, InputReport, LastError, MachineFacts,
+    ProcessMemory, SystemFacts,
 };
 use crate::onboarding::{ExtensionCopy, ExtensionReport};
 use crate::performance::{
@@ -196,11 +197,14 @@ pub const REFRESH_DEBOUNCE: Duration = Duration::from_millis(250);
 /// Produce the diagnostics report for the given input.
 pub fn present_diagnostics(input: DiagnosticInput) -> DiagnosticReport {
     let onboarding = classify_onboarding(&input);
-    let warnings = input
+    let mut warnings = input
         .performance
         .as_ref()
         .map(performance_warnings)
         .unwrap_or_default();
+    if let Some(InputReport::Levels(levels)) = input.daemon_report.as_ref().and_then(|r| r.input) {
+        warnings.extend(input_warning(levels));
+    }
     let (body, hanging) = align_fields(&render_body(&input, onboarding, &warnings));
     DiagnosticReport {
         onboarding,
@@ -208,6 +212,23 @@ pub fn present_diagnostics(input: DiagnosticInput) -> DiagnosticReport {
         body,
         hanging,
     }
+}
+
+/// An offset this large is a driver or hardware fault: a working input sits
+/// near -80 dBFS, issue #64's at -13.
+const OFFSET_WARNING_DB: i32 = -40;
+
+fn input_warning(levels: InputLevels) -> Option<Warning> {
+    (levels.offset_db >= OFFSET_WARNING_DB).then(|| Warning {
+        cause: format!(
+            "{} ({} dBFS)",
+            gettextrs::gettext("The microphone has a large DC offset"),
+            levels.offset_db
+        ),
+        remedy: gettextrs::gettext(
+            "It costs headroom and points to an audio driver fault. Try another input in the system sound settings.",
+        ),
+    })
 }
 
 fn performance_warnings(facts: &PerformanceFacts) -> Vec<Warning> {
@@ -515,6 +536,13 @@ fn render_body(
                     &drops_summary(drops),
                 );
             }
+            if let Some(input) = report.input {
+                field(
+                    &mut out,
+                    &gettextrs::gettext("Input"),
+                    &input_summary(input),
+                );
+            }
             field(
                 &mut out,
                 &gettextrs::gettext("Last error"),
@@ -732,6 +760,25 @@ fn drops_summary(drops: AudioDrops) -> String {
         "{} {}",
         drops.not_active,
         gettextrs::gettext("chunks dropped this session")
+    )
+}
+
+/// The last dictation's levels, so a report tells a broken microphone from a
+/// noisy room without a recording.
+fn input_summary(input: InputReport) -> String {
+    let InputReport::Levels(levels) = input else {
+        return gettextrs::gettext("no dictation yet");
+    };
+    let speech = match levels.speech_db {
+        Some(db) => format!("{} {db} dBFS", gettextrs::gettext("speech")),
+        None => gettextrs::gettext("no speech heard"),
+    };
+    format!(
+        "{} {} dBFS, {} {} dBFS, {speech}",
+        gettextrs::gettext("offset"),
+        levels.offset_db,
+        gettextrs::gettext("floor"),
+        levels.floor_db,
     )
 }
 
@@ -1230,6 +1277,11 @@ mod tests {
             }),
             daemon_report: Some(DaemonReport {
                 drops: Some(AudioDrops { not_active: 3 }),
+                input: Some(InputReport::Levels(InputLevels {
+                    offset_db: -82,
+                    floor_db: -61,
+                    speech_db: Some(-27),
+                })),
                 last_error: None,
             }),
             extension: Some(ExtensionReport::Known {
@@ -1267,6 +1319,12 @@ mod tests {
         );
         assert!(text.contains("parakeet-tdt-0.6b-v3"), "{text}");
         assert!(text.contains("3 chunks dropped this session"), "{text}");
+        assert_eq!(
+            field_value(&text, "Input"),
+            Some("offset -82 dBFS, floor -61 dBFS, speech -27 dBFS"),
+            "{text}"
+        );
+        assert!(report.warnings().is_empty(), "{:?}", report.warnings());
         assert_eq!(field_value(&text, "Last error"), Some("none"), "{text}");
         assert_eq!(
             field_value(&text, "Shell extension"),
@@ -1291,10 +1349,54 @@ mod tests {
             }),
             daemon_report: Some(DaemonReport {
                 drops: None,
+                input: None,
                 last_error,
             }),
             ..DiagnosticInput::default()
         }
+    }
+
+    fn with_input(input: InputReport) -> DiagnosticReport {
+        let mut daemon = running_daemon(None);
+        daemon.daemon_report.as_mut().unwrap().input = Some(input);
+        present_diagnostics(daemon)
+    }
+
+    #[test]
+    fn an_offset_microphone_is_a_warning() {
+        let levels = |offset_db| {
+            InputReport::Levels(InputLevels {
+                offset_db,
+                floor_db: -60,
+                speech_db: None,
+            })
+        };
+        let report = with_input(levels(-13));
+        assert_eq!(
+            field_value(&report.copy_text(), "Input"),
+            Some("offset -13 dBFS, floor -60 dBFS, no speech heard")
+        );
+        assert_eq!(report.warnings().len(), 1);
+        assert!(
+            report.warnings()[0].cause.contains("(-13 dBFS)"),
+            "{:?}",
+            report.warnings()
+        );
+        assert_eq!(with_input(levels(-40)).warnings().len(), 1);
+        assert!(with_input(levels(-41)).warnings().is_empty());
+    }
+
+    #[test]
+    fn before_any_dictation_the_input_says_so() {
+        let report = with_input(InputReport::NotYet);
+        assert_eq!(
+            field_value(&report.copy_text(), "Input"),
+            Some("no dictation yet")
+        );
+        assert!(report.warnings().is_empty());
+        // An older daemon publishes nothing, and the line is left out.
+        let text = present_diagnostics(running_daemon(None)).copy_text();
+        assert_eq!(field_value(&text, "Input"), None, "{text}");
     }
 
     /// The page and the exported report are the same text, and the detail is
