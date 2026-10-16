@@ -118,6 +118,22 @@ def test_room_tone_is_not_speech_and_speech_is():
     assert has_speech(_speech(20.0))
 
 
+def _offset(audio: np.ndarray, dc: float = -0.219) -> np.ndarray:
+    """Issue #64's microphone: a -13 dBFS offset drifting at 15 Hz."""
+    t = np.arange(len(audio), dtype=np.float32) / RATE
+    return (audio + dc + 0.008 * np.sin(2 * np.pi * 15.0 * t)).astype(np.float32)
+
+
+def test_an_offset_neither_hides_speech_nor_makes_room_tone_speech():
+    assert has_speech(_offset(_speech(20.0)))
+    assert not has_speech(_offset(_tone(20.0, 0.001)))
+
+
+def test_a_hole_in_speech_on_an_offset_is_still_a_gap():
+    region = _offset(_speech(14.0))
+    assert untranscribed_gap(region, _onsets(0.5, 1.5, 2.5, 11.0)) == pytest.approx(8.5)
+
+
 def test_a_region_shorter_than_one_frame_holds_no_speech():
     assert not has_speech(_speech(0.01))
 

@@ -28,6 +28,8 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from myna.testbed.streaming.highpass import HighPass
+
 # A stretch of loud audio with no token in it is never legitimate; 2 s is well
 # clear of the pauses and timestamp coarseness of a healthy decode.
 UNTRANSCRIBED_GAP_S = 2.0
@@ -50,7 +52,7 @@ def _frame_rms(samples: NDArray[np.float32]) -> NDArray[np.float32] | None:
     frames = len(samples) // _FRAME
     if not frames:
         return None
-    block = samples[: frames * _FRAME].reshape(-1, _FRAME)
+    block = HighPass()(samples[: frames * _FRAME]).reshape(-1, _FRAME)
     return np.sqrt(np.mean(block * block, axis=1))
 
 

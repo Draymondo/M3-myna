@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import NDArray
 
+from myna.testbed.streaming.highpass import HighPass
+
 # Words ending within this of the window tail have insufficient right context
 # to commit (whisper boundary heuristic, contracts/emission-semantics.md).
 TAIL_GUARD_S = 0.5
@@ -249,6 +251,7 @@ class SilenceCut:
         self._silence_cut = silence_cut_seconds
         self._force_cut = force_cut_seconds
         self._vad = _AdaptiveVad()
+        self._highpass = HighPass()  # fed every scanned sample once, in order
         self._silence_run = 0.0
         self._run_peak = 0.0  # loudest raw frame of the current silence run
         self._heard_since_cut = False
@@ -298,7 +301,7 @@ class SilenceCut:
             raise ValueError("observe needs the samples from unscanned_offset() onwards")
         frame_len = _FRAME_LEN
         while off + frame_len <= offset + len(samples):
-            frame = samples[off - offset : off - offset + frame_len]
+            frame = self._highpass(samples[off - offset : off - offset + frame_len])
             rms = math.sqrt(float(np.mean(frame * frame)))
             activity = self._vad.update(rms)
             off += frame_len

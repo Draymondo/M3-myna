@@ -206,6 +206,19 @@ def test_silence_cut_fires_on_pause_past_arm():
     assert 16.4 <= cut_at.at <= 17.5
 
 
+def test_silence_cut_fires_on_a_pause_over_a_microphone_offset():
+    """Issue #64: a -13 dBFS offset drifting at 15 Hz read as endless speech,
+    so only the force cut ever committed."""
+    audio = np.concatenate([_speech(16.0), _silence(2.0), _speech(2.0)])
+    t = np.arange(len(audio), dtype=np.float32) / RATE
+    audio = (audio - 0.219 + 0.008 * np.sin(2 * np.pi * 15.0 * t)).astype(np.float32)
+
+    cuts = _drive(SilenceCut(), audio)
+
+    assert cuts and not cuts[0].forced
+    assert 16.4 <= cuts[0].at <= 17.5
+
+
 def test_silence_cut_ignores_short_pauses():
     cut = SilenceCut()
     # Past the arm, pauses under the 0.5 s cut don't fire.
