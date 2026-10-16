@@ -21,7 +21,7 @@ Standards-Version: 4.7.4
 Rules-Requires-Root: no
 
 Package: myna-config
-Architecture: amd64
+Architecture: amd64 arm64
 Depends: ${misc:Depends},
          ${shlibs:Depends},
          libglib2.0-bin,

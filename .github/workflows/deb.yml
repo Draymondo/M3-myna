@@ -34,8 +34,9 @@ jobs:
       fail-fast: false
       matrix:
         series: [noble, resolute, stonking]
-    name: build (${{ matrix.series }})
-    runs-on: ubuntu-latest
+        arch: [amd64, arm64]
+    name: build (${{ matrix.series }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       # Full history: dev/version.sh counts commits since the last tag.
       - uses: actions/checkout@v6
@@ -57,9 +58,10 @@ jobs:
         run: |
           series=${{ matrix.series }}
           mirror=http://archive.ubuntu.com/ubuntu
+          [ ${{ matrix.arch }} = amd64 ] || mirror=http://ports.ubuntu.com/ubuntu-ports
           mkdir -p ~/.cache/sbuild
           mmdebstrap --variant=buildd --mode=unshare \
-            "$series" ~/.cache/sbuild/"$series"-amd64.tar \
+            "$series" ~/.cache/sbuild/"$series"-${{ matrix.arch }}.tar \
             "deb $mirror $series main universe" \
             "deb $mirror $series-updates main universe" \
             "deb $mirror $series-security main universe"
@@ -75,13 +77,13 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: sbuild-log-${{ matrix.series }}
+          name: sbuild-log-${{ matrix.series }}-${{ matrix.arch }}
           retention-days: 14
           path: target/deb/${{ matrix.series }}/**/*.build
 
       - uses: actions/upload-artifact@v7
         with:
-          name: myna-config-${{ matrix.series }}
+          name: myna-config-${{ matrix.series }}-${{ matrix.arch }}
           retention-days: 14
           path: target/deb/${{ matrix.series }}/*.deb
           if-no-files-found: error
