@@ -134,12 +134,18 @@ jobs:
             ${{ matrix.snap }}-snap/version/version.metainfo.xml
           if-no-files-found: error
 
+      # What an arm64 tester runs: dev/bench-edge.sh against the edge snaps.
+      - name: Tester bundle
+        if: matrix.snap == 'whisper'
+        run: |
+          mkdir -p bundle
+          cp myna-bench.pyz dev/bench-edge.sh dev/bench-edge.yaml bundle/
       - if: matrix.snap == 'whisper'
         uses: actions/upload-artifact@v7
         with:
           name: myna-bench-arm64
           retention-days: 14
-          path: myna-bench.pyz
+          path: bundle/
 
   publish:
     needs: build

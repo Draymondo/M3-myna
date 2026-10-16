@@ -1,0 +1,20 @@
+# Myna benchmarker config for the inference snaps on the store's edge channel,
+# as dev/bench-edge.sh runs it. Each snap's CPU engine is picked by hardware
+# detection, as on a user's machine; every model it ships is swept in every
+# mode it supports, at shipped settings. See bench.yaml.example for the knobs.
+manifest: ./corpus/manifest.json
+out: ./results.jsonl
+# Per target and pass. A slow board marks a cell usability_fail rather than
+# running all night, which is itself the answer for that cell.
+sweep_budget_seconds: 900
+
+targets:
+  - snap: myna-parakeet
+    channel: latest/edge
+    components: [model-parakeet-int8]
+  - snap: myna-whisper
+    channel: latest/edge
+    components: [model-tiny, model-base, model-small]
+  - snap: myna-funasr
+    channel: latest/edge
+    components: [model-sensevoice]
