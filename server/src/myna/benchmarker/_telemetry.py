@@ -119,7 +119,8 @@ def _hwmon_temps(chip: Path) -> dict[str, float]:
 
 def package_temp_c(root: Path) -> float | None:
     """The hottest CPU package: k10temp/zenpower Tdie (else Tctl), coretemp
-    "Package id N", else the ``x86_pkg_temp`` thermal zone."""
+    "Package id N", else the ``x86_pkg_temp`` thermal zone, else the hottest
+    zone with cpu in its type (arm64 boards: ``cpu-thermal``, ``cpu1-top-thermal``)."""
     found: list[float] = []
     for chip in (root / "sys/class/hwmon").glob("hwmon*"):
         name = _read(chip / "name")
@@ -134,6 +135,11 @@ def package_temp_c(root: Path) -> float | None:
         for zone in (root / "sys/class/thermal").glob("thermal_zone*"):
             milli = _read_int(zone / "temp")
             if _read(zone / "type") == "x86_pkg_temp" and milli is not None:
+                found.append(milli / 1000)
+    if not found:
+        for zone in (root / "sys/class/thermal").glob("thermal_zone*"):
+            milli = _read_int(zone / "temp")
+            if "cpu" in (_read(zone / "type") or "") and milli is not None:
                 found.append(milli / 1000)
     return round(max(found), 1) if found else None
 

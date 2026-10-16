@@ -30,6 +30,12 @@ SYS_CPU = Path("/sys/devices/system/cpu")
 BUILD_VERSION_FILE = "VERSION"
 
 
+class CpuCluster(TypedDict):
+    core: str | None
+    count: int
+    max_mhz: int | None
+
+
 class Smt(TypedDict):
     control: str | None
     active: bool | None
@@ -71,6 +77,7 @@ class Machine(TypedDict):
     hostname: str
     cpu: str | None
     cpu_cores: int | None
+    cpu_clusters: list[CpuCluster]
     ram_gb: float | None
     gpu: str | None
     gpu_vram_gb: float | None
@@ -101,8 +108,110 @@ def _cpuinfo_field(name: str) -> str | None:
     return None
 
 
+# MIDR implementer and part numbers, named as the kernel's
+# arch/arm64/include/asm/cputype.h names them. arm64 cpuinfo has no model name.
+_ARM_IMPLEMENTERS = {0x41: "Arm", 0x4E: "NVIDIA", 0x51: "Qualcomm", 0x61: "Apple", 0xC0: "Ampere"}
+_ARM_PARTS = {
+    (0x41, 0xD03): "Cortex-A53",
+    (0x41, 0xD04): "Cortex-A35",
+    (0x41, 0xD05): "Cortex-A55",
+    (0x41, 0xD07): "Cortex-A57",
+    (0x41, 0xD08): "Cortex-A72",
+    (0x41, 0xD09): "Cortex-A73",
+    (0x41, 0xD0A): "Cortex-A75",
+    (0x41, 0xD0B): "Cortex-A76",
+    (0x41, 0xD0C): "Neoverse-N1",
+    (0x41, 0xD0D): "Cortex-A77",
+    (0x41, 0xD40): "Neoverse-V1",
+    (0x41, 0xD41): "Cortex-A78",
+    (0x41, 0xD44): "Cortex-X1",
+    (0x41, 0xD46): "Cortex-A510",
+    (0x41, 0xD47): "Cortex-A710",
+    (0x41, 0xD48): "Cortex-X2",
+    (0x41, 0xD49): "Neoverse-N2",
+    (0x41, 0xD4D): "Cortex-A715",
+    (0x41, 0xD4E): "Cortex-X3",
+    (0x41, 0xD4F): "Neoverse-V2",
+    (0x41, 0xD80): "Cortex-A520",
+    (0x41, 0xD81): "Cortex-A720",
+    (0x41, 0xD82): "Cortex-X4",
+    (0x41, 0xD84): "Neoverse-V3",
+    (0x41, 0xD85): "Cortex-X925",
+    (0x41, 0xD87): "Cortex-A725",
+    (0x41, 0xD8E): "Neoverse-N3",
+    (0x4E, 0x004): "Carmel",
+    (0x51, 0x001): "Oryon",
+    (0xC0, 0xAC3): "Ampere-1",
+    (0xC0, 0xAC4): "Ampere-1a",
+}
+
+
+def _cpuinfo_blocks() -> list[dict[str, str]]:
+    """/proc/cpuinfo's fields, one map per processor."""
+    try:
+        text = Path("/proc/cpuinfo").read_text(encoding="utf-8")
+    except OSError:
+        return []
+    blocks: list[dict[str, str]] = []
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        if key.strip() == "processor":
+            blocks.append({})
+        if blocks:
+            blocks[-1].setdefault(key.strip(), value.strip())
+    return blocks
+
+
+def _arm_core(fields: dict[str, str]) -> str | None:
+    """The core an arm64 processor stanza describes, by its MIDR numbers."""
+    try:
+        implementer = int(fields["CPU implementer"], 16)
+        part = int(fields["CPU part"], 16)
+    except (KeyError, ValueError):
+        return None
+    vendor = _ARM_IMPLEMENTERS.get(implementer, f"0x{implementer:02x}")
+    return _ARM_PARTS.get((implementer, part), f"{vendor} 0x{part:03x}")
+
+
+def _board() -> str | None:
+    """The machine's name: its device tree model, else DMI vendor and product."""
+    model = (_read(Path("/proc/device-tree/model")) or "").rstrip("\x00").strip()
+    if model:
+        return model
+    dmi = Path("/sys/class/dmi/id")
+    names = (_read(dmi / "sys_vendor"), _read(dmi / "product_name"))
+    return " ".join(n for n in names if n) or None
+
+
 def _cpu_model() -> str | None:
-    return _cpuinfo_field("model name")
+    """x86's model name; on arm64, the board and a count of each core type."""
+    if name := _cpuinfo_field("model name"):
+        return name
+    counts: dict[str, int] = {}
+    for fields in _cpuinfo_blocks():
+        if core := _arm_core(fields):
+            counts[core] = counts.get(core, 0) + 1
+    if not counts:
+        return None
+    cores = " + ".join(f"{count}x {core}" for core, count in counts.items())
+    board = _board()
+    return f"{board} ({cores})" if board else cores
+
+
+def _cpu_clusters() -> list[CpuCluster]:
+    """Cores grouped by type and top clock, so big.LITTLE and hybrid parts show."""
+    clusters: dict[tuple[str | None, int | None], CpuCluster] = {}
+    for fields in _cpuinfo_blocks():
+        khz = _read(SYS_CPU / f"cpu{fields['processor']}" / "cpufreq" / "cpuinfo_max_freq")
+        max_mhz = int(khz) // 1000 if khz and khz.isdigit() else None
+        core = _arm_core(fields)
+        if (core, max_mhz) in clusters:
+            clusters[core, max_mhz]["count"] += 1
+        else:
+            clusters[core, max_mhz] = {"core": core, "count": 1, "max_mhz": max_mhz}
+    return list(clusters.values())
 
 
 def _microcode() -> str | None:
@@ -285,6 +394,7 @@ def collect() -> Machine:
         "hostname": socket.gethostname(),
         "cpu": _cpu_model(),
         "cpu_cores": _cpu_cores(),
+        "cpu_clusters": _cpu_clusters(),
         "ram_gb": _ram_gb(),
         "gpu": first["name"] if first else None,
         "gpu_vram_gb": (

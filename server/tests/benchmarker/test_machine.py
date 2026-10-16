@@ -77,6 +77,77 @@ def test_cpu_cores_is_none_when_cpuinfo_is_unreadable(fake_proc_files):
     assert machine._cpu_cores() is None
 
 
+def arm_cpuinfo(*parts: tuple[str, str]) -> str:
+    """An arm64 /proc/cpuinfo: no model name, one MIDR stanza per core."""
+    return "\n".join(
+        f"processor\t: {i}\nCPU implementer\t: {implementer}\nCPU part\t: {part}\n"
+        for i, (implementer, part) in enumerate(parts)
+    )
+
+
+PI5 = arm_cpuinfo(*[("0x41", "0xd0b")] * 4)
+BIG_LITTLE = arm_cpuinfo(*[("0x41", "0xd05")] * 4, *[("0x41", "0xd0b")] * 2)
+
+
+@pytest.fixture
+def no_board(fake_proc_files):
+    for path in (
+        "/proc/device-tree/model",
+        "/sys/class/dmi/id/sys_vendor",
+        "/sys/class/dmi/id/product_name",
+    ):
+        fake_proc_files[path] = OSError("absent")
+    return fake_proc_files
+
+
+def test_arm_cpu_model_names_the_board_and_its_cores(no_board):
+    no_board["/proc/cpuinfo"] = PI5
+    no_board["/proc/device-tree/model"] = "Raspberry Pi 5 Model B Rev 1.0\x00"
+    assert machine._cpu_model() == "Raspberry Pi 5 Model B Rev 1.0 (4x Cortex-A76)"
+
+
+def test_arm_cpu_model_falls_back_to_the_dmi_board(no_board):
+    no_board["/proc/cpuinfo"] = arm_cpuinfo(*[("0x51", "0x001")] * 12)
+    no_board["/sys/class/dmi/id/sys_vendor"] = "LENOVO\n"
+    no_board["/sys/class/dmi/id/product_name"] = "21BX\n"
+    assert machine._cpu_model() == "LENOVO 21BX (12x Oryon)"
+
+
+def test_arm_cpu_model_lists_each_core_type_in_order(no_board):
+    no_board["/proc/cpuinfo"] = BIG_LITTLE
+    assert machine._cpu_model() == "4x Cortex-A55 + 2x Cortex-A76"
+
+
+def test_an_unknown_arm_core_keeps_its_midr_numbers(no_board):
+    no_board["/proc/cpuinfo"] = arm_cpuinfo(("0x41", "0xfff"), ("0x99", "0x123"))
+    assert machine._cpu_model() == "1x Arm 0xfff + 1x 0x99 0x123"
+
+
+def test_cpu_clusters_group_cores_by_type_and_top_clock(no_board, sys_cpu):
+    no_board["/proc/cpuinfo"] = BIG_LITTLE
+    for cpu in range(6):
+        sys_cpu(f"cpu{cpu}/cpufreq/cpuinfo_max_freq", "1800000" if cpu < 4 else "2400000")
+    assert machine._cpu_clusters() == [
+        {"core": "Cortex-A55", "count": 4, "max_mhz": 1800},
+        {"core": "Cortex-A76", "count": 2, "max_mhz": 2400},
+    ]
+
+
+def test_x86_hybrid_cores_split_on_their_top_clock(fake_proc_files, sys_cpu):
+    fake_proc_files["/proc/cpuinfo"] = CPUINFO
+    sys_cpu("cpu0/cpufreq/cpuinfo_max_freq", "5100000")
+    sys_cpu("cpu1/cpufreq/cpuinfo_max_freq", "3800000")
+    assert machine._cpu_clusters() == [
+        {"core": None, "count": 1, "max_mhz": 5100},
+        {"core": None, "count": 1, "max_mhz": 3800},
+    ]
+
+
+def test_cpu_clusters_are_empty_when_cpuinfo_is_unreadable(fake_proc_files):
+    fake_proc_files["/proc/cpuinfo"] = OSError("no /proc")
+    assert machine._cpu_clusters() == []
+
+
 # ─── RAM ─────────────────────────────────────────────────────────────────────
 
 
@@ -330,7 +401,7 @@ def test_harness_names_no_zipapp_when_run_from_source(tmp_path, monkeypatch):
 # ─── collect ─────────────────────────────────────────────────────────────────
 
 
-def test_collect_emits_the_header_record_schema(fake_proc_files, monkeypatch):
+def test_collect_emits_the_header_record_schema(fake_proc_files, sys_cpu, monkeypatch):
     fake_proc_files["/proc/cpuinfo"] = CPUINFO
     fake_proc_files["/etc/os-release"] = OS_RELEASE
     monkeypatch.setattr(subprocess, "run", fake_smi(query=SMI_QUERY.splitlines()[1] + "\n"))
@@ -352,6 +423,7 @@ def test_collect_emits_the_header_record_schema(fake_proc_files, monkeypatch):
     assert set(header["harness"]) == {"version", "pyz", "pyz_sha256"}
     assert header["cpu"] == "AMD Ryzen 7 7840U"
     assert header["cpu_cores"] == 2
+    assert header["cpu_clusters"] == [{"core": None, "count": 2, "max_mhz": None}]
     assert header["gpu"] == "NVIDIA RTX A2000"
     assert header["gpu_vram_gb"] == 4.0
     assert header["ubuntu"] == "Ubuntu 24.04.1 LTS"
@@ -369,7 +441,7 @@ def test_collect_survives_a_host_where_every_probe_fails(fake_proc_files, monkey
 
     assert header["type"] == "machine"
     assert [header[k] for k in ("cpu", "cpu_cores", "ram_gb", "gpu", "ubuntu")] == [None] * 5
-    assert header["gpus"] == []
+    assert header["gpus"] == [] and header["cpu_clusters"] == []
     assert header["os"]["snapd"] is None and header["os"]["cpu_microcode"] is None
 
 

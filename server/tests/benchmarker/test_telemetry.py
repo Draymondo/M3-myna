@@ -150,6 +150,16 @@ def test_package_temperature_falls_back_to_the_x86_thermal_zone(tmp_path):
     assert package_temp_c(tmp_path) == 66.0
 
 
+def test_package_temperature_falls_back_to_the_hottest_cpu_thermal_zone(tmp_path):
+    put(tmp_path, "sys/class/thermal/thermal_zone0/type", "gpu-thermal")
+    put(tmp_path, "sys/class/thermal/thermal_zone0/temp", "80000")
+    put(tmp_path, "sys/class/thermal/thermal_zone1/type", "cpu-thermal")
+    put(tmp_path, "sys/class/thermal/thermal_zone1/temp", "58300")
+    put(tmp_path, "sys/class/thermal/thermal_zone2/type", "cpu1-top-thermal")
+    put(tmp_path, "sys/class/thermal/thermal_zone2/temp", "61000")
+    assert package_temp_c(tmp_path) == 61.0
+
+
 def test_package_temperature_is_none_without_a_package_sensor(tmp_path):
     put(tmp_path, "sys/class/hwmon/hwmon0/name", "nvme")
     put(tmp_path, "sys/class/hwmon/hwmon0/temp1_input", "90000")
