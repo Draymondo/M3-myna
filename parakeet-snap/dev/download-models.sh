@@ -99,7 +99,4 @@ stage_float() {
 }
 
 stage_int8
-# fp32 serves only the nvidia-gpu engine, which is amd64-only.
-if [ "$(dpkg --print-architecture)" = amd64 ]; then
-    stage_float
-fi
+stage_float

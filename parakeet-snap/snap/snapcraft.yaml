@@ -219,7 +219,6 @@ parts:
       - python3-pip
       - binutils
     override-build: |
-      [ "$CRAFT_ARCH_BUILD_FOR" = amd64 ] || exit 0
       target="$CRAFT_PART_INSTALL/site-packages"
       mkdir -p "$target"
       # --no-deps: onnxruntime-gpu's Python dependencies are the CPU build's,
@@ -277,4 +276,4 @@ components:
     summary: NVIDIA GPU runtime (onnxruntime-gpu, CUDA 13, cuDNN 9)
     description: |
       GPU inference stack for the nvidia-gpu engine: myna + onnxruntime-gpu
-      and the NVIDIA CUDA 13 and cuDNN 9 libraries. amd64 only.
+      and the NVIDIA CUDA 13 and cuDNN 9 libraries.

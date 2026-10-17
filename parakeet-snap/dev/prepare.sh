@@ -20,18 +20,20 @@ ls -l "$snap_dir/wheels"
 # already in --dest, so only what is missing is fetched.
 wheels="${XDG_CACHE_HOME:-$HOME/.cache}/myna/wheels"
 house="$snap_dir/wheelhouse-cuda"
-# The CUDA runtime is amd64-only; elsewhere its part builds nothing.
-if [ "$(dpkg --print-architecture)" != amd64 ]; then
-    rm -rf "$house"
-    mkdir -p "$house"
-    exit 0
-fi
 report="$(mktemp)"
 trap 'rm -f "$report"' EXIT
-target=(--only-binary=:all: --python-version 3.12 --implementation cp --abi cp312
-    --platform manylinux_2_28_x86_64 --platform manylinux_2_27_x86_64
-    --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64
-    --platform manylinux_2_12_x86_64)
+target=(--only-binary=:all: --python-version 3.12 --implementation cp --abi cp312)
+if [ "$(dpkg --print-architecture)" = arm64 ]; then
+    # onnxruntime-gpu's aarch64 wheels are manylinux_2_34; core24 has glibc 2.39.
+    tags="manylinux_2_34 manylinux_2_28 manylinux_2_27 manylinux_2_17 manylinux2014"
+    machine=aarch64
+else
+    tags="manylinux_2_28 manylinux_2_27 manylinux_2_17 manylinux2014 manylinux_2_12"
+    machine=x86_64
+fi
+for tag in $tags; do
+    target+=(--platform "${tag}_$machine")
+done
 wanted=(--no-deps --requirement "$snap_dir/runtimes/onnxruntime-cuda/requirements.txt")
 mkdir -p "$wheels"
 python3 -m pip download --quiet --dest "$wheels" "${target[@]}" "${wanted[@]}"
