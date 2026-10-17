@@ -3,7 +3,7 @@
 # results to send back. For a tester without a checkout, next to
 # myna-bench.pyz and bench-edge.yaml:
 #
-#   ./bench-edge.sh
+#   ./bench-edge.sh            # BENCH_CLIPS=<n> for a corpus other than 40 clips
 #
 # It installs, measures and purges myna-parakeet, myna-whisper and myna-funasr,
 # so a backend already set up for dictation is removed and needs reinstalling
@@ -11,7 +11,7 @@
 # run, as myna-bench requires, and restored after.
 set -euo pipefail
 
-[ "$(id -u)" = 0 ] || exec sudo bash "$0" "$@"
+[ "$(id -u)" = 0 ] || exec sudo BENCH_CLIPS="${BENCH_CLIPS:-40}" bash "$0" "$@"
 cd "$(dirname "$0")"
 
 for tool in python3 ffmpeg snap; do
@@ -29,7 +29,7 @@ if [ -n "$installed" ]; then
 fi
 
 [ -f corpus/manifest.json ] ||
-    python3 myna-bench.pyz download-corpus --out corpus --select balanced -n 40
+    python3 myna-bench.pyz download-corpus --out corpus --select balanced -n "${BENCH_CLIPS:-40}"
 
 saved=()
 for governor in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
