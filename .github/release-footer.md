@@ -9,3 +9,5 @@ sudo apt install myna-config
 ```
 
 Myna Settings then sets up the rest: the Dictation app, a speech model and the GNOME Shell extension. They come from the Snap Store's `latest/edge` channel as [myna](https://snapcraft.io/myna), [myna-parakeet](https://snapcraft.io/myna-parakeet), [myna-whisper](https://snapcraft.io/myna-whisper) and [myna-funasr](https://snapcraft.io/myna-funasr).
+
+arm64 is experimental: the speech models run on the CPU, and Parakeet's NVIDIA GPU engine is built for arm64 but has not been tried on hardware yet.

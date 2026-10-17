@@ -1,11 +1,13 @@
 # The four published snaps, built natively on an arm64 runner (snapcraft does
 # not cross-build), smoke-tested there with myna-bench on a few LibriSpeech
-# clips, and optionally released to latest/edge for arm64 only.
+# clips, and released to latest/edge for arm64 only. A release tag runs it;
+# amd64 is still published by hand (.kb/releasing.md).
 #
-# The publish job needs the store-edge environment's SNAPCRAFT_STORE_CREDENTIALS
-# (snapcraft export-login scoped to these snaps and edge), so it runs only on a
-# push to arm64-test or a dispatch that asks for it. A snap whose build or smoke
-# fails uploads no artifact, so its publish leg fails and the others go ahead.
+# Publishing needs the store-edge environment's SNAPCRAFT_STORE_CREDENTIALS
+# (snapcraft export-login scoped to these snaps and edge), so it only happens
+# in a repository whose ARM64_PUBLISH variable is true. Elsewhere the tag still
+# builds and smoke-tests. A snap whose build or smoke fails uploads no
+# artifact, so its publish leg fails and the others go ahead.
 name: arm64 snaps
 
 concurrency:
@@ -19,7 +21,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: [arm64-test]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
 jobs:
   build:
@@ -149,7 +151,7 @@ jobs:
 
   publish:
     needs: build
-    if: ${{ !cancelled() && (github.event_name == 'push' || inputs.publish) }}
+    if: ${{ !cancelled() && vars.ARM64_PUBLISH == 'true' && (github.event_name == 'push' || inputs.publish) }}
     strategy:
       fail-fast: false
       matrix:

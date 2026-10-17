@@ -26,5 +26,6 @@ The steps, in order:
 1. `make release-notes > notes.md` drafts the features and fixes since the last tag, internal scopes left out. Cut it down to the highlights a user cares about; keep the full lists only where they help.
 2. `dch -v X.Y.Z-0ubuntu1 -D <devel series>` in `myna-config-deb/`, with the highlights as its bullets. Commit it and push it to main.
 3. `git tag -s --cleanup=verbatim -F notes.md vX.Y.Z`, then `git push origin vX.Y.Z`. `.github/workflows/release.yml` drafts the GitHub Release from the tag message and the footer.
-4. From the tagged checkout: `make publish-<snap> CHANNEL=latest/edge` for each published snap, then the PPA uploads per series (`myna-config-deb/AGENTS.md`).
-5. Once the store and the PPA serve `X.Y.Z`, `gh release edit vX.Y.Z --draft=false`.
+4. From the tagged checkout: `make publish-<snap> CHANNEL=latest/edge` for each published snap, then the PPA uploads per series (`myna-config-deb/AGENTS.md`). These are amd64; the PPA builds arm64 from the same uploads.
+5. Push the tag to the fork that holds the `store-edge` environment and `ARM64_PUBLISH=true` (`quine00/myna`; canonical/myna would need an admin to host them). Its `arm64-snaps.yml` builds, smoke-tests and releases the arm64 snaps to edge; snapcraft cannot cross-build them here.
+6. Once the store and the PPA serve `X.Y.Z` on both architectures, `gh release edit vX.Y.Z --draft=false`.
