@@ -145,3 +145,13 @@ def test_a_hole_in_speech_is_still_a_gap_at_the_worst_measured_spread():
 
     assert has_speech(region)
     assert untranscribed_gap(region, _onsets(0.5, 1.5, 2.5, 11.0)) == pytest.approx(8.5)
+
+
+def test_a_long_skip_over_paused_speech_is_a_gap():
+    """Whisper skipped 26 s of read speech (11-35 s of the
+    long-form clip): sentences with pauses between them, whose median level
+    sat under the loud threshold though most of the stretch was words."""
+    sentence = np.concatenate([_speech(1.0), _quiet(1.5)])
+    region = np.concatenate([_speech(4.0), *[sentence] * 10, _speech(4.0)])
+
+    assert untranscribed_gap(region, _onsets(0.5, 1.5, 2.5, 29.5, 30.5)) == pytest.approx(27.0)

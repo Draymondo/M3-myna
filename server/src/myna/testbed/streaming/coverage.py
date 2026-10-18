@@ -100,7 +100,12 @@ def untranscribed_gap(samples: NDArray[np.float32], spans: list[tuple[float, flo
         if start - covered > worst:
             lo = min(max(int(covered * _RATE) // _FRAME, 0), frames - 1)
             hi = max(lo + 1, min(int(start * _RATE) // _FRAME, frames))
-            if float(np.median(rms[lo:hi])) > loud:
+            stretch = rms[lo:hi]
+            # The median alone misses a long skip over speech with pauses in
+            # it: 26 s of read sentences sat just under the line (whisper,
+            # 2026-10-13). Two seconds of loud audio in all is words too.
+            loud_s = np.count_nonzero(stretch > loud) * _FRAME / _RATE
+            if float(np.median(stretch)) > loud or loud_s >= UNTRANSCRIBED_GAP_S:
                 worst = start - covered
         covered = max(covered, end)
     return worst
