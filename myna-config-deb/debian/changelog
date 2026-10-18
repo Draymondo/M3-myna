@@ -1,3 +1,21 @@
+myna-config (0.2.4-0ubuntu1) stonking; urgency=medium
+
+  * Myna runs on 64-bit Arm (arm64): Myna Settings from the PPA and
+    every model from the Snap Store. Only basic testing has been
+    performed. Testing from those with AArch64 setups would be much
+    appreciated!
+  * A microphone with a DC offset no longer keeps dictation running
+    forever or hides its pauses, and Diagnostics shows the last
+    dictation's input levels and warns about such an offset (#64).
+  * Whisper and Parakeet finish a dictation on the CPU when the GPU
+    runs out of memory partway through, instead of losing the text.
+  * Whisper no longer silently skips long stretches of speech that have
+    pauses in them.
+  * New translations: Azerbaijani, Esperanto, Estonian, French, Occitan,
+    Polish, Russian, Slovak, Ukrainian and Traditional Chinese.
+
+ -- Charles <charles05@canonical.com>  Sun, 18 Oct 2026 11:21:58 +0100
+
 myna-config (0.2.3-0ubuntu1) stonking; urgency=medium
 
   * On an NVIDIA machine whose driver Myna cannot use, setup picks the
