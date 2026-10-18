@@ -184,7 +184,7 @@ fn accessibility_probe() -> glib::ExitCode {
     view_stack.set_visible_child_name("diagnostics");
     install_appearance_policy(window.upcast_ref());
     window.present();
-    settle_gtk();
+    wait_until(|| refresh_button.is_mapped());
 
     if !refresh_button.grab_focus()
         || gtk::prelude::GtkWindowExt::focus(&window).as_ref() != Some(refresh_button.upcast_ref())
@@ -203,8 +203,11 @@ fn accessibility_probe() -> glib::ExitCode {
     }
     println!("keyboard-traversal: verified");
 
+    // A mapped window keeps its size; the default applies when it maps.
+    window.set_visible(false);
     window.set_default_size(500, 500);
-    settle_gtk();
+    window.present();
+    wait_until(|| window.view_switcher_bar().reveals());
     if !window.view_switcher_bar().reveals() {
         eprintln!("view switcher did not collapse below the 600sp breakpoint");
         return glib::ExitCode::FAILURE;
@@ -373,7 +376,8 @@ fn onboarding_probe() -> glib::ExitCode {
         );
         ui.window()
     };
-    settle_gtk();
+    // Focus arriving after the welcome step would re-read the bare machine.
+    wait_until(|| window.is_active());
     if step(&window) != "welcome" {
         eprintln!("the wizard did not open on its first step");
         return glib::ExitCode::FAILURE;
@@ -521,12 +525,7 @@ fn onboarding_probe() -> glib::ExitCode {
     elsewhere.close();
     window.present();
     let refreshed = || bare.reads() > 0;
-    for _ in 0..100 {
-        if refreshed() {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(refreshed);
     if !refreshed() {
         eprintln!("regaining focus on the component step did not re-read the machine");
         return glib::ExitCode::FAILURE;
@@ -536,12 +535,7 @@ fn onboarding_probe() -> glib::ExitCode {
     // only that both components are missing.
     let unreadable =
         || status_note(&page).is_some_and(|note| note.starts_with("Setup status unavailable."));
-    for _ in 0..100 {
-        if unreadable() {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(unreadable);
     if !unreadable() {
         eprintln!(
             "the component step hid that it cannot read the machine: {:?}",
@@ -586,22 +580,17 @@ fn onboarding_probe() -> glib::ExitCode {
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
-        ui.set_poll_interval(Duration::from_millis(50));
+        ui.set_poll_interval(PROBE_POLL);
         ui.set_beat(Duration::from_millis(300));
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
     settle_gtk();
     machine.hold_restart(true);
     machine.hold_changes(true);
     machine.install();
-    for _ in 0..100 {
-        if setup_spinner(&window) {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(|| setup_spinner(&window));
     if !setup_spinner(&window) || step(&window) != "components" {
         eprintln!("components installed while the step showed set nothing up");
         return glib::ExitCode::FAILURE;
@@ -610,12 +599,7 @@ fn onboarding_probe() -> glib::ExitCode {
     // snapd shows the backend connected before its install has mounted it
     // into Myna: restarting then leaves the daemon without it.
     let polled = machine.change_reads();
-    for _ in 0..100 {
-        if machine.change_reads() >= polled + 2 {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(|| machine.change_reads() >= polled + 2);
     if machine.change_reads() < polled + 2
         || machine.restarts_attempted() != 0
         || !setup_spinner(&window)
@@ -639,26 +623,13 @@ fn onboarding_probe() -> glib::ExitCode {
     window.forward_button().emit_clicked();
     machine.hold_restart(false);
     let shown = || installed_shown(&window) && !setup_spinner(&window);
-    for _ in 0..100 {
-        if shown() || step(&window) != "components" {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(|| shown() || step(&window) != "components");
     if !shown() || step(&window) != "components" {
         eprintln!("the footer did not say everything is installed before moving on");
         return glib::ExitCode::FAILURE;
     }
     println!("onboarding-auto: status before advancing");
-    let reached = |window: &ui::OnboardingWindow, name: &str| {
-        for _ in 0..100 {
-            if step(window) == name {
-                return true;
-            }
-            settle_gtk();
-        }
-        false
-    };
+    let reached = |window: &ui::OnboardingWindow, name: &str| wait_until(|| step(window) == name);
     if !reached(&window, "shortcut") {
         eprintln!("the wizard did not move on after setting dictation up");
         return glib::ExitCode::FAILURE;
@@ -669,9 +640,7 @@ fn onboarding_probe() -> glib::ExitCode {
     }
     println!("onboarding-auto: set up once and advanced");
     let reads = machine.reads();
-    for _ in 0..5 {
-        settle_gtk();
-    }
+    run_for(PROBE_POLL * 6);
     if machine.reads() != reads {
         eprintln!("the wizard kept polling after leaving the component step");
         return glib::ExitCode::FAILURE;
@@ -697,26 +666,19 @@ fn onboarding_probe() -> glib::ExitCode {
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
-        ui.set_poll_interval(Duration::from_millis(50));
+        ui.set_poll_interval(PROBE_POLL);
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
     settle_gtk();
     machine.hold_changes(true);
     machine.install();
-    for _ in 0..100 {
-        if machine.change_reads() > 0 {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(|| machine.change_reads() > 0);
     window.close();
     machine.hold_changes(false);
     let reads = machine.change_reads();
-    for _ in 0..20 {
-        settle_gtk();
-    }
+    run_for(PROBE_POLL * 6);
     if reads == 0 || machine.change_reads() != reads || machine.restarts_attempted() != 0 {
         eprintln!("setup went on after the wizard closed");
         return glib::ExitCode::FAILURE;
@@ -739,20 +701,20 @@ fn onboarding_probe() -> glib::ExitCode {
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
-        ui.set_poll_interval(Duration::from_millis(50));
+        ui.set_poll_interval(PROBE_POLL);
         ui.set_beat(Duration::from_secs(60));
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
     settle_gtk();
     machine.install();
-    for _ in 0..100 {
-        if installed_shown(&window) {
-            break;
-        }
-        settle_gtk();
-    }
+    // Set up and pausing: the status shows and Next takes input.
+    wait_until(|| {
+        installed_shown(&window)
+            && machine.applied().len() == 1
+            && window.forward_button().is_sensitive()
+    });
     window.forward_button().emit_clicked();
     settle_gtk();
     if step(&window) != "shortcut" || machine.applied().len() != 1 {
@@ -784,11 +746,11 @@ fn onboarding_probe() -> glib::ExitCode {
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
-        ui.set_poll_interval(Duration::from_millis(50));
+        ui.set_poll_interval(PROBE_POLL);
         ui.set_beat(Duration::from_millis(50));
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
     settle_gtk();
     machine.install();
@@ -837,20 +799,15 @@ fn onboarding_probe() -> glib::ExitCode {
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
-        ui.set_poll_interval(Duration::from_millis(50));
+        ui.set_poll_interval(PROBE_POLL);
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
     settle_gtk();
     machine.install();
     let failed = || setup_failure_toasted(&window);
-    for _ in 0..100 {
-        if failed() {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(failed);
     if !failed()
         || window.visible_dialog().is_some()
         || step(&window) != "components"
@@ -918,17 +875,12 @@ fn onboarding_probe() -> glib::ExitCode {
         );
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
-    settle_gtk();
+    wait_until(|| step(&window) == "components" && window.forward_button().is_sensitive());
     window.forward_button().emit_clicked();
     let failed = || setup_failure_toasted(&window);
-    for _ in 0..100 {
-        if failed() {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(failed);
     if !failed() || step(&window) != "components" {
         eprintln!("a failed setup did not report itself on the component step");
         return glib::ExitCode::FAILURE;
@@ -967,19 +919,12 @@ fn onboarding_probe() -> glib::ExitCode {
         );
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
     settle_gtk();
     window.forward_button().emit_clicked();
-    for _ in 0..100 {
-        if machine.switches_attempted() == 1 && window.forward_button().is_sensitive() {
-            break;
-        }
-        settle_gtk();
-    }
-    for _ in 0..5 {
-        settle_gtk();
-    }
+    wait_until(|| machine.switches_attempted() == 1 && window.forward_button().is_sensitive());
+    run_for(NOTHING_FOLLOWS);
     if machine.switches_attempted() != 1
         || !toast_texts(&window).is_empty()
         || window.visible_dialog().is_some()
@@ -1000,12 +945,7 @@ fn onboarding_probe() -> glib::ExitCode {
     machine.dismiss_authorization(false);
     machine.deny_switches(true);
     window.forward_button().emit_clicked();
-    for _ in 0..100 {
-        if setup_failure_toasted(&window) {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(|| setup_failure_toasted(&window));
     if !setup_failure_toasted(&window)
         || machine.switches_attempted() != 2
         || step(&window) != "components"
@@ -1080,15 +1020,7 @@ fn onboarding_probe() -> glib::ExitCode {
         return glib::ExitCode::FAILURE;
     }
     println!("onboarding-installed: the button says so");
-    let reaches = |name: &str| {
-        for _ in 0..100 {
-            if step(&window) == name {
-                return true;
-            }
-            settle_gtk();
-        }
-        false
-    };
+    let reaches = |name: &str| wait_until(|| step(&window) == name);
     let can_pop = || {
         window
             .navigation()
@@ -1115,12 +1047,7 @@ fn onboarding_probe() -> glib::ExitCode {
         return glib::ExitCode::FAILURE;
     }
     println!("onboarding-setup: no spinner for a moment");
-    for _ in 0..100 {
-        if setup_spinner(&window) {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(|| setup_spinner(&window));
     if !setup_spinner(&window) || !installed_shown(&window) {
         eprintln!("setting up showed no spinner under the installed button");
         return glib::ExitCode::FAILURE;
@@ -1163,15 +1090,8 @@ fn onboarding_probe() -> glib::ExitCode {
     });
     settle_gtk();
     machine.hold_restart(false);
-    for _ in 0..100 {
-        if machine.applied().len() == 2 {
-            break;
-        }
-        settle_gtk();
-    }
-    for _ in 0..20 {
-        settle_gtk();
-    }
+    wait_until(|| machine.applied().len() == 2);
+    run_for(NOTHING_FOLLOWS);
     if !popped || machine.applied().len() != 2 || step(&window) != "welcome" {
         eprintln!(
             "back during setup: popped {popped}, restarts {:?}, on {}",
@@ -1679,7 +1599,7 @@ fn typing_probe() -> glib::ExitCode {
     };
     // The only text row is the spoken language, which the Model tab shows.
     let model_settings = adw::PreferencesGroup::new();
-    let _page = ready_page(controller, writer, rows, &overlay, &model_settings);
+    let _page = ready_page(controller.clone(), writer, rows, &overlay, &model_settings);
     overlay.set_child(Some(&model_settings));
     let window = adw::Window::builder().content(&overlay).build();
     window.present();
@@ -1706,11 +1626,20 @@ fn typing_probe() -> glib::ExitCode {
         return glib::ExitCode::FAILURE;
     }
     let original = row.text().to_string();
+    // Past the 250 ms debounce, until the write is issued and completed.
+    let written = |text: &str| {
+        controller
+            .row(myna_core::settings::KEY_LANGUAGE)
+            .is_some_and(|row| {
+                !row.pending() && *row.value() == ClientSettingValue::Text(text.to_owned())
+            })
+    };
     row.set_text("xx");
-    // Longer than the 250 ms debounce, so the write is issued and completed.
-    for _ in 0..8 {
-        settle_gtk();
+    if !wait_until(|| written("xx")) {
+        eprintln!("the text row's write never completed");
+        return glib::ExitCode::FAILURE;
     }
+    settle_gtk();
     if !focus_in_row() {
         eprintln!("focus left the text row while its write was in flight");
         return glib::ExitCode::FAILURE;
@@ -1721,9 +1650,7 @@ fn typing_probe() -> glib::ExitCode {
     }
     println!("typing-focus: retained");
     row.set_text(&original);
-    for _ in 0..8 {
-        settle_gtk();
-    }
+    wait_until(|| written(&original));
     glib::ExitCode::SUCCESS
 }
 
@@ -1848,15 +1775,10 @@ fn onboarding_control_probe() -> glib::ExitCode {
         window.forward_button().emit_clicked();
         settle_gtk();
         window.forward_button().emit_clicked();
-        for _ in 0..100 {
-            if step(&window) == "shortcut" {
-                break;
-            }
-            settle_gtk();
-        }
-        for _ in 0..5 {
-            settle_gtk();
-        }
+        // The button takes input once the step has read the daemon, in the
+        // same pass that decides on the default key.
+        wait_until(|| step(&window) == "shortcut" && button.is_sensitive());
+        settle_gtk();
         (window, button, control)
     };
     let dictation = gettextrs::gettext("Dictation");
@@ -1913,12 +1835,7 @@ fn onboarding_control_probe() -> glib::ExitCode {
     let _ = other.set_string("binding", "");
 
     let (window, button, control) = walk();
-    for _ in 0..40 {
-        if desktop.binding().is_some() {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(|| desktop.binding().is_some());
     settle_gtk();
     if step(&window) != "shortcut"
         || desktop.binding().as_deref() != Some(crate::shortcut::DEFAULT_ACCELERATOR)
@@ -1947,12 +1864,7 @@ fn onboarding_control_probe() -> glib::ExitCode {
     // Myna Settings' own row and GNOME's keyboard settings both rewrite the
     // desktop shortcut; the page follows either.
     let _ = desktop.install(&dictation, toggle, "<Super>k");
-    for _ in 0..20 {
-        if keycaps(window.upcast_ref()) == ["Super", "K"] {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(|| keycaps(window.upcast_ref()) == ["Super", "K"]);
     if keycaps(window.upcast_ref()) != ["Super", "K"] {
         eprintln!(
             "a new desktop key left the caps {:?}",
@@ -1983,15 +1895,7 @@ fn onboarding_control_probe() -> glib::ExitCode {
             gio::Cancellable::NONE,
         )
     };
-    let settles = |done: &dyn Fn() -> bool| {
-        for _ in 0..40 {
-            if done() {
-                return true;
-            }
-            settle_gtk();
-        }
-        done()
-    };
+    let settles = |done: &dyn Fn() -> bool| wait_until(done);
     // A restart, so every proxy reads the new daemon's properties.
     let restarted_as = |registration, legacy| {
         connection.unregister_object(registration).ok();
@@ -2066,9 +1970,7 @@ fn onboarding_control_probe() -> glib::ExitCode {
     window.forward_button().emit_clicked();
     settle_gtk();
     window.forward_button().emit_clicked();
-    for _ in 0..10 {
-        settle_gtk();
-    }
+    run_for(NOTHING_FOLLOWS);
     if step(&window) != "components" {
         eprintln!("setup moved on before the restarted daemon was on the bus");
         return glib::ExitCode::FAILURE;
@@ -2077,12 +1979,7 @@ fn onboarding_control_probe() -> glib::ExitCode {
         eprintln!("the probe could not restart its stand-in daemon");
         return glib::ExitCode::FAILURE;
     }
-    for _ in 0..100 {
-        if step(&window) == "shortcut" {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(|| step(&window) == "shortcut");
     if step(&window) != "shortcut" || !shortcut_shown(&window) {
         eprintln!(
             "once the daemon was up the wizard reached {} with caps {:?}",
@@ -2135,9 +2032,12 @@ fn shortcut_unsupported_probe() -> glib::ExitCode {
     overlay.set_child(Some(&page));
     let window = adw::Window::builder().content(&overlay).build();
     window.present();
-    for _ in 0..20 {
-        settle_gtk();
-    }
+    wait_until(|| {
+        myna.shortcut_row()
+            .subtitle()
+            .is_some_and(|subtitle| subtitle.contains("cannot set up the shortcut"))
+    });
+    settle_gtk();
     let subtitle = myna.shortcut_row().subtitle().unwrap_or_default();
     if myna.shortcut_button().is_visible()
         || !subtitle.contains("cannot set up the shortcut")
@@ -2203,15 +2103,7 @@ fn shortcut_probe() -> glib::ExitCode {
     let window = adw::Window::builder().content(&overlay).build();
     window.present();
 
-    let settles = |done: &dyn Fn() -> bool| {
-        for _ in 0..40 {
-            if done() {
-                return true;
-            }
-            settle_gtk();
-        }
-        done()
-    };
+    let settles = |done: &dyn Fn() -> bool| wait_until(done);
     let button = myna.shortcut_button();
     let keys = myna.shortcut_keys();
     // The row shows the key as compact key caps joined by "+".
@@ -3177,15 +3069,7 @@ fn backends_probe() -> glib::ExitCode {
     );
     ui.install_window_actions(&window);
 
-    let settles = |done: &dyn Fn() -> bool| {
-        for _ in 0..100 {
-            if done() {
-                return true;
-            }
-            settle_gtk();
-        }
-        done()
-    };
+    let settles = |done: &dyn Fn() -> bool| wait_until(done);
     let content = || {
         backend_nav
             .visible_page()
@@ -3298,17 +3182,15 @@ fn backends_probe() -> glib::ExitCode {
     println!("model-group: lists the installed models");
 
     // Reads already in flight finish on their own; only a read after they
-    // settle is one the step under test started.
-    let quiesce = || {
-        let mut reads = machine.reads();
-        let mut quiet = 0;
-        while quiet < 5 {
-            settle_gtk();
-            let now = machine.reads();
-            quiet = if now == reads { quiet + 1 } else { 0 };
-            reads = now;
+    // settle is one the step under test started: no discovery running, and
+    // no read for a while.
+    let quiesce = || loop {
+        wait_until(|| !ui.controller().discovery_loading());
+        let reads = machine.reads();
+        run_for(NOTHING_FOLLOWS);
+        if machine.reads() == reads && !ui.controller().discovery_loading() {
+            return reads;
         }
-        reads
     };
 
     // Choosing another model switches at once. Dismissing snapd's
@@ -3431,7 +3313,7 @@ fn backends_probe() -> glib::ExitCode {
         );
         return glib::ExitCode::FAILURE;
     }
-    if mode_shown() != when_you_stop {
+    if !settles(&|| mode_shown() == when_you_stop) {
         eprintln!("with Whisper active the mode shows {:?}", mode_shown());
         return glib::ExitCode::FAILURE;
     }
@@ -3467,7 +3349,7 @@ fn backends_probe() -> glib::ExitCode {
     }
     quiesce();
     println!("model-group: choosing a model switches to it");
-    if mode_shown() != as_you_speak {
+    if !settles(&|| mode_shown() == as_you_speak) {
         eprintln!("with Parakeet active the mode shows {:?}", mode_shown());
         return glib::ExitCode::FAILURE;
     }
@@ -3590,6 +3472,27 @@ fn backends_probe() -> glib::ExitCode {
         return glib::ExitCode::FAILURE;
     }
     println!("sounds: Sound style offers the three sets and previews while on");
+    // Dismissed, rather than left to time out ahead of the next toast.
+    for close in descendants(overlay.upcast_ref(), &|widget| {
+        widget.type_().name() == "AdwToastWidget"
+    })
+    .iter()
+    .flat_map(|toast| {
+        descendants(toast, &|widget| {
+            widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+                button.icon_name().as_deref() == Some("window-close-symbolic")
+            })
+        })
+    }) {
+        close
+            .downcast_ref::<gtk::Button>()
+            .expect("a button")
+            .emit_clicked();
+    }
+    if !settles(&|| !toasted()) {
+        eprintln!("the Preview toast did not close");
+        return glib::ExitCode::FAILURE;
+    }
 
     // A refused switch puts the radio back and says so in a toast whose
     // Details button opens the full report.
@@ -3651,12 +3554,7 @@ fn backends_probe() -> glib::ExitCode {
         eprintln!("the Details button did not open the failure report");
         return glib::ExitCode::FAILURE;
     }
-    // libadwaita 1.5 ignores a close that lands during the open animation.
-    for _ in 0..8 {
-        settle_gtk();
-    }
-    report().expect("failure report").force_close();
-    if !settles(&|| window.visible_dialog().is_none()) {
+    if !close_dialog(&window, &report().expect("failure report")) {
         eprintln!("the failure report did not close");
         return glib::ExitCode::FAILURE;
     }
@@ -4088,24 +3986,20 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
-        ui.set_poll_interval(Duration::from_millis(50));
+        ui.set_poll_interval(PROBE_POLL);
         ui.set_beat(Duration::from_secs(60));
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
+    wait_until(|| {
+        components_page(&window)
+            .is_some_and(|page| page.install_button().is_mapped() && status_note(&page).is_some())
+    });
     settle_gtk();
     let page = components_page(&window).ok_or("the component step shows no component page")?;
     let button = page.install_button();
-    let until = |done: &dyn Fn() -> bool| {
-        for _ in 0..200 {
-            if done() {
-                break;
-            }
-            settle_gtk();
-        }
-        done()
-    };
+    let until = |done: &dyn Fn() -> bool| wait_until(done);
     let step = || {
         window
             .navigation()
@@ -4173,10 +4067,7 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
     .and_then(|button| button.downcast::<gtk::Button>().ok())
     .ok_or("the refusal toast has no Details button")?
     .emit_clicked();
-    // libadwaita 1.5 ignores a close that lands during the open animation.
-    for _ in 0..8 {
-        settle_gtk();
-    }
+    wait_until(|| window.visible_dialog().is_some());
     let dialog = window
         .visible_dialog()
         .and_then(|dialog| dialog.downcast::<ui::OperationErrorDialog>().ok())
@@ -4204,6 +4095,8 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
     else {
         return Err("the failure report lacks its text or Copy Details".to_owned());
     };
+    wait_until(|| shown.height() > 0 && copy.height() > 0);
+    settle_gtk();
     let top = |widget: &gtk::Widget| {
         widget
             .compute_point(&dialog, &gtk::graphene::Point::zero())
@@ -4215,17 +4108,15 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
             "the report leaves {gap} px between its text and Copy Details"
         ));
     }
-    dialog.force_close();
-    if !until(&|| window.visible_dialog().is_none()) {
+    if !close_dialog(&window, &dialog) {
         return Err("the failure report did not close".to_owned());
     }
     println!("onboarding-install: a refusal reverts with a toast and its report");
 
     let long = ui::OperationErrorDialog::new("heading", "summary", &"line\n".repeat(200));
     long.present(Some(&window));
-    for _ in 0..8 {
-        settle_gtk();
-    }
+    wait_until(|| long.is_mapped() && long.height() > 0);
+    settle_gtk();
     let scrolls = find_descendant(long.upcast_ref(), &|widget| {
         widget
             .downcast_ref::<gtk::Label>()
@@ -4240,8 +4131,7 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
             window.height()
         ));
     }
-    long.force_close();
-    if !until(&|| window.visible_dialog().is_none()) {
+    if !close_dialog(&window, &long) {
         return Err("the long report did not close".to_owned());
     }
     println!("onboarding-install: a long report scrolls inside the window");
@@ -4254,9 +4144,8 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
     button.grab_focus();
     button.emit_clicked();
     let flag_step = gettextrs::gettext("Enabling user daemons support");
-    if !until(&|| installing_shown(&window, &flag_step))
+    if !until(&|| installing_shown(&window, &flag_step) && machine.set_ups() == 3)
         || window.forward_button().is_sensitive()
-        || machine.set_ups() != 3
     {
         return Err(format!(
             "while snapd asks for the flag the step shows {:?}, {:?}",
@@ -4391,10 +4280,12 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
     }
     println!("onboarding-install: the extension is enabled last");
     extensions.holding.set(false);
-    if !until(&|| installed_shown(&window) && machine.applied().len() == 1)
-        || step() != "components"
-        || status_note(&page).is_some()
-        || button_top() != resting
+    if !until(&|| {
+        installed_shown(&window)
+            && machine.applied().len() == 1
+            && status_note(&page).is_none()
+            && button_top() == resting
+    }) || step() != "components"
     {
         return Err(format!(
             "a finished run shows {:?} on {}, applied {:?}",
@@ -4446,10 +4337,10 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
-        ui.set_poll_interval(Duration::from_millis(50));
+        ui.set_poll_interval(PROBE_POLL);
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
     settle_gtk();
     let elsewhere = gettextrs::gettext("{step} ({percent}%)")
@@ -4519,21 +4410,14 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
+        ui.set_poll_interval(PROBE_POLL);
         ui.set_beat(Duration::from_millis(50));
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
     settle_gtk();
-    let until = |done: &dyn Fn() -> bool| {
-        for _ in 0..200 {
-            if done() {
-                break;
-            }
-            settle_gtk();
-        }
-        done()
-    };
+    let until = |done: &dyn Fn() -> bool| wait_until(done);
     let page = components_page(&window).ok_or("the component step shows no component page")?;
     let button = page.install_button();
     let plain_offer = || {
@@ -4624,10 +4508,11 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
+        ui.set_poll_interval(PROBE_POLL);
         ui.set_beat(Duration::from_millis(50));
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
     settle_gtk();
     components_page(&window)
@@ -4675,21 +4560,14 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
             probe_languages,
             crate::onboarding_ui::Opener::FirstRun,
         );
+        ui.set_poll_interval(PROBE_POLL);
         ui.set_beat(Duration::from_millis(50));
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
     settle_gtk();
-    let until = |done: &dyn Fn() -> bool| {
-        for _ in 0..200 {
-            if done() {
-                break;
-            }
-            settle_gtk();
-        }
-        done()
-    };
+    let until = |done: &dyn Fn() -> bool| wait_until(done);
     let step = || {
         window
             .navigation()
@@ -4773,21 +4651,14 @@ fn probe_language(application: &adw::Application) -> Result<(), String> {
             },
             crate::onboarding_ui::Opener::FirstRun,
         );
+        ui.set_poll_interval(PROBE_POLL);
         ui.set_beat(Duration::from_millis(50));
         ui.window()
     };
-    settle_gtk();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
     settle_gtk();
-    let until = |done: &dyn Fn() -> bool| {
-        for _ in 0..200 {
-            if done() {
-                break;
-            }
-            settle_gtk();
-        }
-        done()
-    };
+    let until = |done: &dyn Fn() -> bool| wait_until(done);
     let page = components_page(&window).ok_or("the component step shows no component page")?;
     let button = page.install_button();
     button.emit_clicked();
@@ -4837,7 +4708,7 @@ fn probe_language(application: &adw::Application) -> Result<(), String> {
 
     let machine = ProbeMachine::myna_only();
     let store = Rc::new(ProbeSettings::default());
-    let window = crate::onboarding_ui::OnboardingUi::present_with_ports(
+    let ui = crate::onboarding_ui::OnboardingUi::present_with_ports(
         application,
         initial.clone(),
         Rc::new(crate::adapters::snap_backend::SnapBackendRepository::new(
@@ -4849,9 +4720,11 @@ fn probe_language(application: &adw::Application) -> Result<(), String> {
         Some(store.clone() as Rc<dyn crate::ports::ClientSettings>),
         || vec!["hi_IN".to_owned()],
         crate::onboarding_ui::Opener::FirstRun,
-    )
-    .window();
-    settle_gtk();
+    );
+    ui.set_poll_interval(PROBE_POLL);
+    ui.set_beat(Duration::from_millis(50));
+    let window = ui.window();
+    wait_until(|| window.is_active());
     window.forward_button().emit_clicked();
     settle_gtk();
     let page = components_page(&window).ok_or("the component step shows no component page")?;
@@ -5206,22 +5079,10 @@ fn probe_capture_in_place(
 
     // Moving on again re-runs setup, which sets a key only where none is.
     window.navigation().pop();
-    for _ in 0..40 {
-        if step() == "components" && !control.capturing() {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(|| step() == "components" && !control.capturing());
     forward.emit_clicked();
-    for _ in 0..100 {
-        if step() == "shortcut" {
-            break;
-        }
-        settle_gtk();
-    }
-    for _ in 0..10 {
-        settle_gtk();
-    }
+    wait_until(|| step() == "shortcut" && button.is_sensitive());
+    settle_gtk();
     if step() != "shortcut"
         || desktop.binding().as_deref() != Some("<Control><Alt>d")
         || caps() != ["Ctrl", "Alt", "D"]
@@ -5256,9 +5117,8 @@ fn probe_capture_in_place(
         .and_then(|widget| widget.downcast::<gtk::Button>().ok())
         .ok_or_else(|| format!("the alert has no {response} button"))?
         .emit_clicked();
-        for _ in 0..10 {
-            settle_gtk();
-        }
+        wait_until(|| window.visible_dialog().is_none());
+        settle_gtk();
         Ok(())
     };
     button.emit_clicked();
@@ -5276,7 +5136,7 @@ fn probe_capture_in_place(
     if shown("Toggle automatic screen orientation") {
         return Err("a declined swap left the earlier refusal on screen".to_owned());
     }
-    if !cancel().is_some_and(|cancel| focused(&cancel)) {
+    if !wait_until(|| cancel().is_some_and(|cancel| focused(&cancel))) {
         return Err("declining the swap did not hand focus back to Cancel".to_owned());
     }
     alert("replace")?;
@@ -5290,7 +5150,7 @@ fn probe_capture_in_place(
             desktop.binding()
         ));
     }
-    if !focused(button) {
+    if !wait_until(|| focused(button)) {
         return Err("after Replace the focus did not return to Change shortcut".to_owned());
     }
     println!("onboarding-capture: swap asked, declining keeps waiting");
@@ -5301,12 +5161,7 @@ fn probe_capture_in_place(
         "/snap/bin/myna.toggle",
         "",
     );
-    for _ in 0..20 {
-        if button.label().as_deref() == Some("Set up shortcut") {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(|| button.label().as_deref() == Some("Set up shortcut"));
     let unbound_at = middle_at();
     button.emit_clicked();
     settle_gtk();
@@ -5338,12 +5193,7 @@ fn probe_capture_in_place(
     settle_gtk();
     window.navigation().pop();
     // The page unmaps once the slide back is over.
-    for _ in 0..40 {
-        if !control.capturing() {
-            break;
-        }
-        settle_gtk();
-    }
+    wait_until(|| !control.capturing());
     if control.capturing() {
         return Err("leaving the step kept capturing".to_owned());
     }
@@ -5421,18 +5271,13 @@ fn setup_failure_report(window: &ui::OnboardingWindow) -> Option<String> {
     .downcast::<gtk::Button>()
     .ok()?
     .emit_clicked();
-    for _ in 0..8 {
-        settle_gtk();
-    }
+    wait_until(|| window.visible_dialog().is_some());
     let dialog = window
         .visible_dialog()?
         .downcast::<ui::OperationErrorDialog>()
         .ok()?;
     let report = dialog.details_text();
-    dialog.force_close();
-    for _ in 0..8 {
-        settle_gtk();
-    }
+    close_dialog(window, &dialog);
     Some(report.to_string())
 }
 
@@ -5520,14 +5365,85 @@ impl ProbeShortcut {
     }
 }
 
+/// How often the wizards under the probes re-read the machine.
+const PROBE_POLL: Duration = Duration::from_millis(50);
+/// How long a probe watches for what must not follow a step whose own
+/// outcome it has already seen, when nothing in between waits on a timer.
+const NOTHING_FOLLOWS: Duration = Duration::from_millis(300);
+/// How long a probe waits for what it expects before it fails.
+const PROBE_PATIENCE: Duration = Duration::from_secs(20);
+/// How long the main loop must sit idle to count as settled: over a frame at
+/// 60 Hz, so a queued layout has run.
+const SETTLE_QUIET: Duration = Duration::from_millis(25);
+/// The most one settle waits: a turning spinner never lets the loop idle.
+const SETTLE_LIMIT: Duration = Duration::from_millis(100);
+
+/// Runs the main loop until it has nothing left to do, for a check of what
+/// the events already queued lead to. Anything that waits on a timer, a
+/// thread or a bus belongs in [`wait_until`].
 fn settle_gtk() {
     let context = glib::MainContext::default();
-    for _ in 0..20 {
-        while context.pending() {
-            context.iteration(false);
+    let start = std::time::Instant::now();
+    let mut idle_since = start;
+    while start.elapsed() < SETTLE_LIMIT {
+        if context.iteration(false) {
+            idle_since = std::time::Instant::now();
+        } else if idle_since.elapsed() >= SETTLE_QUIET {
+            return;
+        } else {
+            std::thread::sleep(Duration::from_millis(1));
         }
-        std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// Runs the main loop until `done` holds, checking it after every event and
+/// every idle millisecond. False when [`PROBE_PATIENCE`] runs out first.
+fn wait_until(done: impl Fn() -> bool) -> bool {
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + PROBE_PATIENCE;
+    loop {
+        if done() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        if !context.iteration(false) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+/// Runs the main loop for `window`, for a check that something does not
+/// happen: long enough for the code under test to have done it if it would.
+fn run_for(window: Duration) {
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + window;
+    while std::time::Instant::now() < deadline {
+        if !context.iteration(false) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+/// Close `dialog` over `window` and wait until it is gone. libadwaita 1.5
+/// ignores a close that lands during the open animation, so the close is
+/// repeated until it takes.
+fn close_dialog(window: &impl IsA<adw::ApplicationWindow>, dialog: &impl IsA<adw::Dialog>) -> bool {
+    let last = Cell::new(None::<std::time::Instant>);
+    wait_until(|| {
+        if window.as_ref().visible_dialog().is_none() {
+            return true;
+        }
+        if last
+            .get()
+            .is_none_or(|at| at.elapsed() >= Duration::from_millis(100))
+        {
+            dialog.as_ref().force_close();
+            last.set(Some(std::time::Instant::now()));
+        }
+        false
+    })
 }
 
 /// Rows placed with the active model go into `model_settings`, which the
