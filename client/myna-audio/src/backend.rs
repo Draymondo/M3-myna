@@ -51,9 +51,7 @@ pub struct Producer {
     session_peak: f32,
     voice: VoiceTracker,
     voice_filter: HighPass,
-    /// Sum and count of every sample this session, for [`AudioStats::offset`].
-    sample_sum: f64,
-    sample_count: u64,
+    offset: OffsetMedian,
 }
 
 impl Producer {
@@ -78,8 +76,7 @@ impl Producer {
             session_peak: 0.0,
             voice: VoiceTracker::default(),
             voice_filter: HighPass::new(format.sample_rate_hz, format.channels.into()),
-            sample_sum: 0.0,
-            sample_count: 0,
+            offset: OffsetMedian::default(),
         }
     }
 
@@ -142,8 +139,7 @@ impl Producer {
         let chunk = PcmChunk::new(data, self.format);
         let (rms, peak, clipped) = levels(&chunk);
         let (sum, count) = sample_sum(&chunk);
-        self.sample_sum += sum;
-        self.sample_count += count;
+        self.offset.observe(sum, count);
         for (frame_rms, frame) in frame_levels(&chunk, &mut self.voice_filter) {
             self.voice.observe(frame_rms, frame);
         }
@@ -160,7 +156,7 @@ impl Producer {
             captured: self.captured,
             noise_floor: self.voice.noise_floor(),
             speech_level: self.voice.speech_level(),
-            offset: (self.sample_sum / self.sample_count.max(1) as f64) as f32,
+            offset: self.offset.median(),
             last_voice: self.voice.last_voice(),
         });
     }
@@ -206,6 +202,56 @@ fn levels(chunk: &PcmChunk) -> (f32, f32, bool) {
 
 /// The chunk's samples summed (linear full scale) and counted; S16LE only,
 /// like [`levels`].
+const OFFSET_BINS: usize = 2001;
+
+/// The session's DC offset: the median of its chunks' mean samples, weighted
+/// by sample count. A lasting offset (issue #64) holds most chunks; a thump as
+/// the stream opens holds a few, and over a short dictation a plain mean read
+/// one as -20 dBFS of offset. Bins 0.001 of full scale wide keep a long
+/// session's memory fixed, and each bin sums its means so a steady offset
+/// reads exactly.
+struct OffsetMedian {
+    weights: Vec<u64>,
+    sums: Vec<f64>,
+    total: u64,
+}
+
+impl Default for OffsetMedian {
+    fn default() -> Self {
+        Self {
+            weights: vec![0; OFFSET_BINS],
+            sums: vec![0.0; OFFSET_BINS],
+            total: 0,
+        }
+    }
+}
+
+impl OffsetMedian {
+    fn observe(&mut self, sum: f64, count: u64) {
+        if count == 0 {
+            return;
+        }
+        let mean = sum / count as f64;
+        // An S16 mean lies in [-1, 32767/32768]: bins 0 to 2000.
+        let bin = ((mean + 1.0) * 1000.0).round() as usize;
+        self.weights[bin] += count;
+        self.sums[bin] += sum;
+        self.total += count;
+    }
+
+    fn median(&self) -> f32 {
+        let half = self.total.div_ceil(2);
+        let mut seen = 0;
+        for (&weight, &sum) in self.weights.iter().zip(&self.sums) {
+            seen += weight;
+            if weight > 0 && seen >= half {
+                return (sum / weight as f64) as f32;
+            }
+        }
+        0.0
+    }
+}
+
 fn sample_sum(chunk: &PcmChunk) -> (f64, u64) {
     if chunk.format.sample_width_bytes != 2 {
         return (0.0, 0);
@@ -404,6 +450,33 @@ mod tests {
         assert_eq!(count, 1600);
         assert!((sum / count as f64 + 0.21875).abs() < 1e-9, "{sum}");
         assert!(sample_sum(&s16_signal(0.1, tone(1_000.0, 0.1))).0.abs() < 0.01);
+    }
+
+    #[test]
+    fn no_samples_is_no_offset() {
+        let mut offset = OffsetMedian::default();
+        assert_eq!(offset.median(), 0.0);
+        offset.observe(0.0, 0);
+        assert_eq!(offset.median(), 0.0);
+    }
+
+    #[test]
+    fn the_offset_is_the_median_chunk_weighted_by_samples() {
+        let mut offset = OffsetMedian::default();
+        offset.observe(-0.5 * 100.0, 100);
+        offset.observe(0.25 * 300.0, 300);
+        offset.observe(0.0, 150);
+        assert!((offset.median() - 0.25).abs() < 1e-6, "{}", offset.median());
+    }
+
+    #[test]
+    fn full_scale_means_land_in_the_end_bins() {
+        let mut offset = OffsetMedian::default();
+        offset.observe(-1.0, 1);
+        assert_eq!(offset.median(), -1.0);
+        let mut offset = OffsetMedian::default();
+        offset.observe(32767.0 / 32768.0, 1);
+        assert!((offset.median() - 32767.0 / 32768.0).abs() < 1e-6);
     }
 
     #[test]

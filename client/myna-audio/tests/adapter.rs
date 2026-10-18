@@ -278,29 +278,55 @@ async fn stats_track_voice_activity() {
     );
 }
 
-#[tokio::test]
-async fn stats_report_the_session_offset() {
-    // Half a second at -0.22 of full scale, then half a second at zero: the
-    // offset is the whole session's mean, not the last chunk's.
-    let at = |sample: i16| -> Vec<u8> {
-        std::iter::repeat_n(sample.to_le_bytes(), 8_000)
-            .flatten()
-            .collect()
-    };
-    let backend = ScriptedBackend::new(vec![Step::Bytes(at(-7168)), Step::Bytes(at(0))]);
+fn constant(sample: i16, samples: usize) -> Vec<u8> {
+    std::iter::repeat_n(sample.to_le_bytes(), samples)
+        .flatten()
+        .collect()
+}
+
+async fn session_offset(steps: Vec<Step>, captured: f64) -> AudioStats {
     let source = CaptureSource::builder(FMT)
-        .backend(Box::new(backend))
+        .backend(Box::new(ScriptedBackend::new(steps)))
         .build();
     let mut stats = source.stats();
     let _stream = Box::new(source).capture();
+    wait_stats(&mut stats, |s| s.captured >= secs(captured)).await
+}
 
-    let snapshot = wait_stats(&mut stats, |s| s.captured >= secs(1.0)).await;
+#[tokio::test]
+async fn stats_report_the_session_offset() {
+    // Issue #64's microphone sits at -0.22 of full scale all session; a
+    // quiet stretch at zero does not pull it towards zero.
+    let snapshot = session_offset(
+        vec![
+            Step::Bytes(constant(-7168, 12_000)),
+            Step::Bytes(constant(0, 4_000)),
+        ],
+        1.0,
+    )
+    .await;
     assert!(
-        (snapshot.offset + 0.109_375).abs() < 1e-6,
+        (snapshot.offset + 0.218_75).abs() < 1e-6,
         "{}",
         snapshot.offset
     );
     assert_eq!(snapshot.last_voice, None, "an offset is not voice");
+}
+
+#[tokio::test]
+async fn a_thump_as_the_stream_opens_is_not_an_offset() {
+    // A healthy Noble laptop microphone opened with 0.3 s near -0.5 of full
+    // scale and then sat at zero: over a 1.5 s session the mean read
+    // -20 dBFS and Diagnostics warned of an offset the input does not have.
+    let snapshot = session_offset(
+        vec![
+            Step::Bytes(constant(-16_384, 4_800)),
+            Step::Bytes(constant(0, 19_200)),
+        ],
+        1.5,
+    )
+    .await;
+    assert!(snapshot.offset.abs() < 1e-3, "{}", snapshot.offset);
 }
 
 #[tokio::test]

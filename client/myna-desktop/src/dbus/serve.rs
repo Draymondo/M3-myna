@@ -276,7 +276,7 @@ impl DictationObject {
             .audio_dropped_not_active
     }
 
-    /// `InputOffset`: the last session's mean sample, signed linear full
+    /// `InputOffset`: the last session's median chunk mean, signed linear full
     /// scale (its DC offset); NaN until a session has ended.
     #[zbus(property)]
     async fn input_offset(&self) -> f64 {

@@ -97,7 +97,7 @@ pub fn status_message(state: &IndicatorState, ready_seen: bool) -> String {
 /// never audio.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct InputLevels {
-    /// The mean sample, signed: the input's DC offset.
+    /// The median chunk mean, signed: the input's DC offset.
     pub offset: f32,
     /// The quietest the input got.
     pub noise_floor: f32,
