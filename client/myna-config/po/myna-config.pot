@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-16 11:42+0100\n"
+"POT-Creation-Date: 2026-10-18 12:14+0100\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -35,7 +35,7 @@ msgid "Performance warnings"
 msgstr ""
 
 #: data/diagnostics-page.blp:33
-msgid "This machine is not currently delivering the CPU that dictation needs."
+msgid "Something on this machine can make dictation slow or inaccurate."
 msgstr ""
 
 #: data/diagnostics-page.blp:38 data/main-window.blp:46

@@ -6,6 +6,10 @@ currently delivering that, and says so in a warning with a cause and a remedy.
 A warning never blocks the ready state: the machine is set up, it is just not
 delivering.
 
+The same group also lists the microphone's DC offset from the last dictation
+(`diagnostics::input_warning`), which is about accuracy rather than the CPU, so
+the group's description names neither.
+
 ## Why a measurement and not a reading
 
 An idle core legitimately rests at `scaling_min_freq`, so a snapshot of
