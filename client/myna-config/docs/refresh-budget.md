@@ -5,7 +5,7 @@ The configuration UI is **event-driven**. A refresh cycle may spawn at most:
 | Reason                     | Process budget (upper bound)                                |
 | -------------------------- | ----------------------------------------------------------- |
 | Idle                       | `0`                                                         |
-| Startup                    | `0`, plus two snapd socket reads: `/v2/snaps` and `/v2/connections` |
+| Startup                    | `0`, plus three snapd socket reads: `/v2/snaps`, `/v2/connections` and `/v2/changes?select=in-progress` |
 | Window regains focus       | as Startup, at most once per `FOCUS_REDISCOVERY_INTERVAL` (2 s) |
 | Backend selected           | `BACKEND_REFRESH_PROCESS_BUDGET` (9 = `snap info` + at most 4 prioritized app probes + 4 modelctl reads) |
 | Diagnostics requested (n backends) | n * `BACKEND_REFRESH_PROCESS_BUDGET`, plus the Startup reads |
@@ -25,8 +25,11 @@ progress on Myna or a backend.
 The settings window rediscovers each time it regains focus, because the user
 may install or remove models in App Center or a terminal. An install from the
 Install more models dialog reads its snapd change every second until it is
-done, then starts a discovery of its own; opening the dialog reads snapd's
-changes once, to follow an install already running. It is refused while a switch or apply holds the
+done, then starts a discovery of its own; every discovery and opening the
+dialog read snapd's changes once, to follow an install already running, since
+snapd lists a model before its install is done (#51). A backend switch reads
+them once more before it starts, and refuses while snapd is changing a snap it
+touches. It is refused while a switch or apply holds the
 operation gate (that operation rediscovers when it completes), while any
 discovery runs, and within `FOCUS_REDISCOVERY_INTERVAL` of any discovery
 starting, so a window flapping in and out of focus reads snapd at most twice

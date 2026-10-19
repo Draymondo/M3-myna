@@ -264,7 +264,8 @@ impl BackendRepository for FakeRepository {
 
 #[derive(Clone)]
 struct FakeConfigurator {
-    result: Rc<RefCell<Option<ConfiguratorResult>>>,
+    /// What successive switches, or restarts, return.
+    results: Rc<RefCell<VecDeque<ConfiguratorResult>>>,
     calls: Rc<RefCell<Vec<Vec<CommandRequest>>>>,
     restarts: Rc<RefCell<usize>>,
     changes: Rc<RefCell<VecDeque<ChangesRead>>>,
@@ -275,11 +276,17 @@ type ConfiguratorResult = Result<Vec<CommandResult>, SystemConfiguratorFailure>;
 impl FakeConfigurator {
     fn returning(result: ConfiguratorResult) -> Self {
         Self {
-            result: Rc::new(RefCell::new(Some(result))),
+            results: Rc::new(RefCell::new(VecDeque::from([result]))),
             calls: Rc::new(RefCell::new(Vec::new())),
             restarts: Rc::new(RefCell::new(0)),
             changes: Rc::default(),
         }
+    }
+
+    /// What the next switch returns, after the ones before it.
+    fn then(self, result: ConfiguratorResult) -> Self {
+        self.results.borrow_mut().push_back(result);
+        self
     }
 
     /// What successive reads of snapd's changes report; once exhausted,
@@ -330,7 +337,10 @@ impl SystemConfigurator for FakeConfigurator {
         _cancellation: CancellationToken,
     ) -> Result<Vec<CommandResult>, SystemConfiguratorFailure> {
         self.calls.borrow_mut().push(plan.operations().to_vec());
-        self.result.borrow_mut().take().unwrap()
+        self.results
+            .borrow_mut()
+            .pop_front()
+            .expect("an unexpected switch")
     }
 
     async fn restart_myna(
@@ -338,7 +348,7 @@ impl SystemConfigurator for FakeConfigurator {
         _cancellation: CancellationToken,
     ) -> Result<(), SystemConfiguratorError> {
         *self.restarts.borrow_mut() += 1;
-        match self.result.borrow_mut().take() {
+        match self.results.borrow_mut().pop_front() {
             Some(Err(failure)) => Err(failure.into_parts().1),
             _ => Ok(()),
         }
@@ -500,17 +510,13 @@ fn verified_noop_returns_the_final_reread_state_without_authorization() {
 fn every_operation_failure_and_auth_denial_still_rediscover_actual_state() {
     let initial = connections(&["old", "new"], &["old"]);
     let plan = SwitchPlan::new(&initial, BackendIdentity::new("new", "provider")).unwrap();
-    let disconnected = connections(&["old", "new"], &[]);
+    // A failure that left "old" disconnected restores it; see
+    // `a_connect_refused_after_the_disconnect_reconnects_the_model_it_had`.
     for (completed, error, final_state) in [
         (
             vec![],
             SystemConfiguratorError::execution("pkexec", vec![], Some(1), "disconnect", "failed"),
             initial.clone(),
-        ),
-        (
-            success(&plan)[..1].to_vec(),
-            SystemConfiguratorError::execution("pkexec", vec![], Some(1), "connect", "failed"),
-            disconnected.clone(),
         ),
         (
             vec![],
@@ -817,6 +823,7 @@ fn only_a_switch_that_did_not_take_is_announced() {
             error: SystemConfiguratorError::authorization_denied("snap", Vec::new(), None, ""),
             final_snapshot: Some(snapshot.clone()),
             discovery_error: None,
+            restore_error: None,
         }),
         SwitchNotice::Failed
     );
@@ -1272,4 +1279,329 @@ fn unreadable_changes_are_reported_without_a_restart() {
 
     assert!(failed.contains("snapd is down"), "{failed}");
     assert_eq!(*configurator.restarts.borrow(), 0);
+}
+
+fn parakeet_to_whisper() -> (ConnectionSnapshot, SwitchPlan) {
+    let initial = connections(&["myna-parakeet", "myna-whisper"], &["myna-parakeet"]);
+    let plan = SwitchPlan::new(&initial, BackendIdentity::new("myna-whisper", "provider")).unwrap();
+    (initial, plan)
+}
+
+/// Issue #51: Whisper's slot lists before snapd has finished installing it,
+/// and switching to it disconnected Parakeet, then had its connect refused
+/// for the install in progress, leaving no model at all.
+#[test]
+fn a_model_snapd_is_still_installing_is_never_switched_to() {
+    let (initial, plan) = parakeet_to_whisper();
+    let repository = FakeRepository::new([Ok(initial.clone())]);
+    let configurator = FakeConfigurator::returning(Ok(success(&plan))).with_changes([change(
+        "Install \"myna-whisper\" snap from \"edge\" channel",
+    )]);
+
+    let outcome = block_on(execute_switch(
+        &plan,
+        &configurator,
+        &repository,
+        CancellationToken::new(),
+    ));
+
+    assert_eq!(
+        outcome,
+        SwitchOutcome::Busy {
+            change: "Install \"myna-whisper\" snap from \"edge\" channel".to_owned(),
+            final_snapshot: initial,
+        }
+    );
+    assert_eq!(outcome.notice(), SwitchNotice::Failed);
+    assert!(configurator.calls().is_empty());
+    assert_eq!(repository.calls(), 1);
+}
+
+/// snapd refuses an interface change on a snap it is changing: Myna, or the
+/// model the switch disconnects.
+#[test]
+fn a_change_on_myna_or_the_model_it_leaves_also_holds_the_switch() {
+    for summary in [
+        "Auto-refresh snap \"myna-parakeet\"",
+        "Refresh \"myna\" snap from \"latest/edge\" channel",
+        "Connect myna:backend to myna-sensevoice:provider",
+    ] {
+        let (initial, plan) = parakeet_to_whisper();
+        let repository = FakeRepository::new([Ok(initial)]);
+        let configurator =
+            FakeConfigurator::returning(Ok(success(&plan))).with_changes([change(summary)]);
+
+        let outcome = block_on(execute_switch(
+            &plan,
+            &configurator,
+            &repository,
+            CancellationToken::new(),
+        ));
+
+        assert!(
+            matches!(&outcome, SwitchOutcome::Busy { change, .. } if change == summary),
+            "{summary}: {outcome:?}"
+        );
+        assert!(configurator.calls().is_empty(), "{summary}");
+    }
+}
+
+#[test]
+fn changes_to_other_snaps_or_unreadable_changes_do_not_hold_a_switch() {
+    for changes in [
+        change("Auto-refresh snap \"firefox\""),
+        Err("snapd is down".to_owned()),
+    ] {
+        let (initial, plan) = parakeet_to_whisper();
+        let switched = connections(&["myna-parakeet", "myna-whisper"], &["myna-whisper"]);
+        let repository = FakeRepository::new([Ok(initial), Ok(switched)]);
+        let configurator =
+            FakeConfigurator::returning(Ok(success(&plan))).with_changes([changes.clone()]);
+
+        let outcome = block_on(execute_switch(
+            &plan,
+            &configurator,
+            &repository,
+            CancellationToken::new(),
+        ));
+
+        assert!(
+            matches!(outcome, SwitchOutcome::Applied { .. }),
+            "{changes:?}: {outcome:?}"
+        );
+    }
+}
+
+fn refused_connect(plan: &SwitchPlan) -> SystemConfiguratorFailure {
+    SystemConfiguratorFailure::new(
+        success(plan)[..1].to_vec(),
+        SystemConfiguratorError::snapd_execution(
+            "POST /v2/interfaces (connect myna:backend myna-whisper:provider)",
+            Some(409),
+            "snap \"myna-whisper\" has \"install-snap\" change in progress",
+        ),
+    )
+}
+
+/// The disconnect is its own snapd change, so a refused connect left the
+/// user with no model; the switch now puts back the one they had.
+#[test]
+fn a_connect_refused_after_the_disconnect_reconnects_the_model_it_had() {
+    let (initial, plan) = parakeet_to_whisper();
+    let none = connections(&["myna-parakeet", "myna-whisper"], &[]);
+    let restore =
+        SwitchPlan::new(&none, BackendIdentity::new("myna-parakeet", "provider")).unwrap();
+    let repository = FakeRepository::new([Ok(initial.clone()), Ok(none), Ok(initial.clone())]);
+    let configurator =
+        FakeConfigurator::returning(Err(refused_connect(&plan))).then(Ok(success(&restore)));
+
+    let outcome = block_on(execute_switch(
+        &plan,
+        &configurator,
+        &repository,
+        CancellationToken::new(),
+    ));
+
+    assert_eq!(
+        configurator.calls(),
+        [plan.operations(), restore.operations()]
+    );
+    let SwitchOutcome::Failed {
+        completed,
+        error,
+        final_snapshot,
+        discovery_error,
+        restore_error,
+    } = outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(final_snapshot, Some(initial));
+    assert_eq!(discovery_error, None);
+    assert_eq!(restore_error, None);
+    assert!(error.to_string().contains("change in progress"), "{error}");
+    // The report lists what ran, the reconnect included.
+    let ran: Vec<_> = completed
+        .iter()
+        .map(|result| result.arguments().join(" "))
+        .collect();
+    assert_eq!(
+        ran,
+        [
+            "disconnect myna:backend myna-parakeet:provider",
+            "connect myna:backend myna-parakeet:provider",
+            "--user restart snap.myna.myna.service",
+        ]
+    );
+}
+
+#[test]
+fn a_reconnect_that_fails_too_is_reported_with_the_switch_failure() {
+    let (initial, plan) = parakeet_to_whisper();
+    let none = connections(&["myna-parakeet", "myna-whisper"], &[]);
+    let refused = SystemConfiguratorError::snapd_execution(
+        "POST /v2/interfaces (connect myna:backend myna-parakeet:provider)",
+        Some(409),
+        "snap \"myna\" has \"refresh-snap\" change in progress",
+    );
+    let repository = FakeRepository::new([Ok(initial), Ok(none.clone()), Ok(none.clone())]);
+    let configurator = FakeConfigurator::returning(Err(refused_connect(&plan))).then(Err(
+        SystemConfiguratorFailure::new(Vec::new(), refused.clone()),
+    ));
+
+    let outcome = block_on(execute_switch(
+        &plan,
+        &configurator,
+        &repository,
+        CancellationToken::new(),
+    ));
+
+    assert!(
+        matches!(
+            &outcome,
+            SwitchOutcome::Failed { final_snapshot: Some(actual), restore_error: Some(error), .. }
+                if *actual == none && **error == refused
+        ),
+        "{outcome:?}"
+    );
+}
+
+/// A cancel that lands between the disconnect and the connect leaves no
+/// model either.
+#[test]
+fn a_switch_cancelled_after_its_disconnect_reconnects_the_model_it_had() {
+    let (initial, plan) = parakeet_to_whisper();
+    let none = connections(&["myna-parakeet", "myna-whisper"], &[]);
+    let restore =
+        SwitchPlan::new(&none, BackendIdentity::new("myna-parakeet", "provider")).unwrap();
+    let repository = FakeRepository::new([Ok(initial.clone()), Ok(none), Ok(initial.clone())]);
+    let configurator = FakeConfigurator::returning(Err(SystemConfiguratorFailure::new(
+        success(&plan)[..1].to_vec(),
+        SystemConfiguratorError::Cancelled,
+    )))
+    .then(Ok(success(&restore)));
+
+    let outcome = block_on(execute_switch(
+        &plan,
+        &configurator,
+        &repository,
+        CancellationToken::new(),
+    ));
+
+    assert_eq!(
+        configurator.calls(),
+        [plan.operations(), restore.operations()]
+    );
+    assert!(
+        matches!(
+            &outcome,
+            SwitchOutcome::Cancelled { final_snapshot: Some(actual), .. } if *actual == initial
+        ),
+        "{outcome:?}"
+    );
+}
+
+/// The model it had stays the user's to have lost only when it had one.
+#[test]
+fn nothing_is_reconnected_without_a_model_lost() {
+    // No model before: nothing to put back.
+    let initial = connections(&["myna-parakeet", "myna-whisper"], &[]);
+    let plan = SwitchPlan::new(&initial, BackendIdentity::new("myna-whisper", "provider")).unwrap();
+    let repository = FakeRepository::new([Ok(initial.clone()), Ok(initial)]);
+    let configurator = FakeConfigurator::returning(Err(refused_connect(&plan)));
+    let outcome = block_on(execute_switch(
+        &plan,
+        &configurator,
+        &repository,
+        CancellationToken::new(),
+    ));
+    assert!(
+        matches!(outcome, SwitchOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(configurator.calls().len(), 1);
+
+    // The new model connected and only the restart failed: the switch took.
+    let (initial, plan) = parakeet_to_whisper();
+    let switched = connections(&["myna-parakeet", "myna-whisper"], &["myna-whisper"]);
+    let repository = FakeRepository::new([Ok(initial), Ok(switched)]);
+    let configurator = FakeConfigurator::returning(Err(SystemConfiguratorFailure::new(
+        success(&plan)[..2].to_vec(),
+        SystemConfiguratorError::execution("systemctl", vec![], Some(1), "", "failed"),
+    )));
+    let outcome = block_on(execute_switch(
+        &plan,
+        &configurator,
+        &repository,
+        CancellationToken::new(),
+    ));
+    assert!(
+        matches!(outcome, SwitchOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(configurator.calls().len(), 1);
+}
+
+/// Setting up waits for snapd first; a change starting after that wait is
+/// reported as snapd's, not as a switch that went wrong.
+#[test]
+fn setting_up_reports_a_change_that_starts_after_its_wait() {
+    let initial = connections(&["myna-parakeet"], &[]);
+    let repository = FakeRepository::new([Ok(initial.clone()), Ok(initial)]);
+    let configurator =
+        FakeConfigurator::returning(Ok(vec![])).with_changes([Ok(Vec::new()), installing()]);
+
+    let error = block_on(ensure_backend_active(
+        &repository,
+        &configurator,
+        Some("myna-parakeet"),
+        &no_wait(),
+        &unheard,
+    ))
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        SetupError::Busy("Install \"myna-parakeet\" snap from \"edge\" channel".to_owned())
+    );
+    assert!(configurator.calls().is_empty());
+}
+
+#[test]
+fn a_cancel_whose_model_cannot_be_put_back_is_a_failure() {
+    let (initial, plan) = parakeet_to_whisper();
+    let none = connections(&["myna-parakeet", "myna-whisper"], &[]);
+    let refused =
+        SystemConfiguratorError::snapd_execution("POST /v2/interfaces", Some(409), "busy");
+    let repository = FakeRepository::new([Ok(initial), Ok(none.clone()), Err(error("gone"))]);
+    let configurator = FakeConfigurator::returning(Err(SystemConfiguratorFailure::new(
+        success(&plan)[..1].to_vec(),
+        SystemConfiguratorError::Cancelled,
+    )))
+    .then(Err(SystemConfiguratorFailure::new(
+        Vec::new(),
+        refused.clone(),
+    )));
+
+    let outcome = block_on(execute_switch(
+        &plan,
+        &configurator,
+        &repository,
+        CancellationToken::new(),
+    ));
+
+    assert!(
+        matches!(
+            &outcome,
+            SwitchOutcome::Failed {
+                error: SystemConfiguratorError::Cancelled,
+                final_snapshot: None,
+                discovery_error: Some(_),
+                restore_error: Some(actual),
+                ..
+            } if **actual == refused
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(outcome.notice(), SwitchNotice::Failed);
 }

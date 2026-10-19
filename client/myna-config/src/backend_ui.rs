@@ -57,6 +57,9 @@ struct ModelRow {
     /// None for a backend of no known family.
     languages: Option<gtk::MenuButton>,
     spinner: gtk::Spinner,
+    /// Shown while snapd is still installing the model, which cannot be
+    /// chosen until it is done.
+    install: ui::InstallControl,
 }
 
 impl ModelRow {
@@ -69,9 +72,6 @@ impl ModelRow {
     }
 }
 
-/// A model row's accessible description: its subtitle, then the pill's text
-/// when it is recommended. libadwaita describes the row by its subtitle
-/// label, which GTK 4.14 reads out as nothing, so the rows say it instead.
 /// Indents each line's wrapped continuation to `columns[line]` characters of
 /// the view's monospace font, so a long value wraps under itself.
 fn hang_continuations(view: &gtk::TextView, columns: &[usize]) {
@@ -108,9 +108,14 @@ fn hang_continuations(view: &gtk::TextView, columns: &[usize]) {
     }
 }
 
-fn model_description(subtitle: Option<&str>, pill: Option<&str>) -> Option<String> {
-    let parts: Vec<&str> = [subtitle, pill]
-        .into_iter()
+/// A model row's accessible description, its `parts` one per line: its
+/// subtitle, its install while one runs, then the pill's text when it is
+/// recommended. libadwaita describes the row by its subtitle label, which
+/// GTK 4.14 reads out as nothing, so the rows say it instead.
+fn model_description(parts: &[Option<&str>]) -> Option<String> {
+    let parts: Vec<&str> = parts
+        .iter()
+        .copied()
         .flatten()
         .filter(|part| !part.is_empty())
         .collect();
@@ -344,7 +349,7 @@ fn offer_install(
         });
         row.reset_relation(gtk::AccessibleRelation::DescribedBy);
         let pill_text = pill.as_ref().map(gtk::Label::label);
-        if let Some(description) = model_description(Some(&subtitle), pill_text.as_deref()) {
+        if let Some(description) = model_description(&[Some(&subtitle), pill_text.as_deref()]) {
             row.update_property(&[gtk::accessible::Property::Description(&description)]);
         }
         offered.push(OfferedRow {
@@ -665,6 +670,10 @@ impl BackendUi {
     /// Choosing a model is the go-ahead: snapd's own authorization prompt is
     /// the only question asked.
     fn begin_backend_switch(self: &Rc<Self>, selected: BackendIdentity) {
+        if self.installing(&selected).is_some() {
+            self.render_model_group();
+            return;
+        }
         let request = match self.active_backend.begin(selected) {
             Ok(request) => request,
             Err(PrepareSwitchError::BackendUnavailable(_)) => {
@@ -705,6 +714,14 @@ impl BackendUi {
             )
             .await;
             coordinator.complete(operation_token);
+            if let Some(why) = switch_failure_log(&outcome) {
+                glib::g_message!(
+                    crate::LOG_DOMAIN,
+                    "switch to {}: {}",
+                    plan.selected().snap_name(),
+                    why
+                );
+            }
             if let Some(ui) = ui.upgrade() {
                 if ui.active_backend.complete(operation_token, outcome.clone()) {
                     ui.render_model_group();
@@ -821,21 +838,12 @@ impl BackendUi {
                 );
             }
             row.pill.set_visible(recommended);
-            let subtitle = row.row.subtitle();
-            let pill = row.pill.label();
-            match model_description(subtitle.as_deref(), recommended.then_some(pill.as_str())) {
-                Some(description) => row
-                    .focus_target()
-                    .update_property(&[gtk::accessible::Property::Description(&description)]),
-                None => row
-                    .focus_target()
-                    .reset_property(gtk::AccessibleProperty::Description),
-            }
             let switching = switching_to.as_ref() == Some(&row.backend);
             row.spinner.set_visible(switching);
             row.spinner.set_spinning(switching);
         }
         self.marking_models.set(false);
+        self.render_model_installs();
 
         let apply_active = self.operation_coordinator.active() == Some(OperationKind::BackendApply);
         group.set_sensitive(
@@ -913,6 +921,9 @@ impl BackendUi {
             if let Some(languages) = &languages {
                 row.add_suffix(languages);
             }
+            let install = ui::InstallControl::new();
+            install.set_visible(false);
+            row.add_suffix(&install);
             row.add_suffix(&spinner);
             group.add(&row);
             rows.push(ModelRow {
@@ -922,6 +933,7 @@ impl BackendUi {
                 pill,
                 languages,
                 spinner,
+                install,
             });
         }
         *self.model_rows.borrow_mut() = rows;
@@ -1083,6 +1095,7 @@ impl BackendUi {
             let better = self.recommendation().and_then(|found| found.better);
             self.show_install_hint(page, better);
         }
+        self.render_model_installs();
         let open = self.install_dialog.borrow();
         let Some(open) = open.as_ref() else {
             return;
@@ -1119,6 +1132,45 @@ impl BackendUi {
         }
     }
 
+    /// The install snapd is still running for `backend`'s family, if any.
+    fn installing(&self, backend: &BackendIdentity) -> Option<ModelInstall> {
+        let family = myna_core::language::ModelFamily::from_snap_name(backend.snap_name())?;
+        self.model_installs.borrow().get(&family).copied()
+    }
+
+    /// A model snapd lists before its install is done shows the install's
+    /// progress and cannot be chosen: snapd would refuse the connect (#51).
+    /// Its accessible description is its subtitle, the install, then the
+    /// pill's text when it shows.
+    fn render_model_installs(&self) {
+        for row in self.model_rows.borrow().iter() {
+            let install = self.installing(&row.backend);
+            let progress = install.map(|install| match install {
+                ModelInstall::Running(percent) => percent,
+                ModelInstall::Confirming => None,
+            });
+            if let Some(percent) = progress {
+                row.install.show_installing(percent);
+            }
+            row.install.set_visible(progress.is_some());
+            if let Some(radio) = &row.radio {
+                radio.set_sensitive(install.is_none());
+            }
+            let target = row.focus_target();
+            target.update_state(&[gtk::accessible::State::Busy(install.is_some())]);
+            let subtitle = row.row.subtitle();
+            let installing = progress.map(ui::installing_text);
+            let pill = row.pill.is_visible().then(|| row.pill.label());
+            match model_description(&[subtitle.as_deref(), installing.as_deref(), pill.as_deref()])
+            {
+                Some(description) => {
+                    target.update_property(&[gtk::accessible::Property::Description(&description)])
+                }
+                None => target.reset_property(gtk::AccessibleProperty::Description),
+            }
+        }
+    }
+
     /// Install `family` through snapd as the user, one at a time, as the
     /// onboarding rows do. Its polkit prompt is the only question:
     /// dismissing it puts the button back silently, a refusal or a failed
@@ -1151,19 +1203,12 @@ impl BackendUi {
         });
     }
 
-    /// Follow an install of an offered family that snapd is already running,
-    /// started in App Center or a terminal, rather than offer to start it
-    /// again. One read of snapd's changes each time the dialog opens.
+    /// Follow an install of a known family that snapd is already running,
+    /// started in App Center, a terminal or a window since closed, rather
+    /// than offer to start it again or offer its model before it is there:
+    /// snapd lists a model's slot before its install is done (#51). One read
+    /// of snapd's changes with each discovery and each time the dialog opens.
     fn follow_installs_elsewhere(self: &Rc<Self>) {
-        let offered: Vec<_> = self
-            .install_dialog
-            .borrow()
-            .as_ref()
-            .map(|open| open.shown.families.clone())
-            .unwrap_or_default();
-        if offered.is_empty() {
-            return;
-        }
         let ui = Rc::downgrade(self);
         let configurator = self.configurator.clone();
         glib::spawn_future_local(async move {
@@ -1176,7 +1221,7 @@ impl BackendUi {
             let Some(ui) = ui.upgrade() else {
                 return;
             };
-            for family in offered {
+            for family in myna_core::language::ModelFamily::ALL {
                 if ui.model_installs.borrow().contains_key(&family) {
                     continue;
                 }
@@ -2222,6 +2267,7 @@ impl BackendUi {
                     .borrow_mut()
                     .retain(|_, install| *install != ModelInstall::Confirming);
                 ui.render_installs();
+                ui.follow_installs_elsewhere();
                 if performance.is_some() {
                     *ui.performance.borrow_mut() = performance;
                 }
@@ -3178,6 +3224,28 @@ fn mismatch_summary(mismatches: &[crate::backend_apply::ReadBackMismatch]) -> St
         .join(" · ")
 }
 
+/// Why a switch did not take, in snapd's own words, for the journal: the
+/// toast leaves them to its Details. None for one that did, or was
+/// cancelled.
+fn switch_failure_log(outcome: &SwitchOutcome) -> Option<String> {
+    let why = match outcome {
+        SwitchOutcome::Busy { change, .. } => format!("snapd is still busy with \"{change}\""),
+        SwitchOutcome::Failed {
+            error,
+            restore_error: Some(restore),
+            ..
+        } => format!("{error}; reconnecting the previous model failed: {restore}"),
+        SwitchOutcome::Failed { error, .. } => error.to_string(),
+        SwitchOutcome::Disagreed { .. } => "the connections do not match it".to_owned(),
+        SwitchOutcome::StaleDiscovery { .. } => "the connections changed first".to_owned(),
+        SwitchOutcome::FinalDiscoveryFailed { error, .. } => error.message().to_owned(),
+        SwitchOutcome::Applied { .. }
+        | SwitchOutcome::Noop { .. }
+        | SwitchOutcome::Cancelled { .. } => return None,
+    };
+    Some(diagnostics::redact_text(&why))
+}
+
 /// A one-line reason and the copyable report for a switch that did not take.
 /// Everything goes through [`diagnostics::redact_text`], so neither the home
 /// directory nor a secret-looking value reaches the dialog.
@@ -3189,6 +3257,7 @@ fn switch_report(outcome: &SwitchOutcome) -> (String, String) {
             discovery_error,
             completed,
             final_snapshot,
+            restore_error,
         } => {
             push_final_connections(
                 &mut details,
@@ -3198,7 +3267,28 @@ fn switch_report(outcome: &SwitchOutcome) -> (String, String) {
             push_completed_operations(&mut details, completed);
             details.push_str(&gettextrs::gettext("Error:\n"));
             details.push_str(&system_error_details(error));
-            gettextrs::gettext("The change could not be made.")
+            if let Some(restore_error) = restore_error {
+                details.push_str(&gettextrs::gettext(
+                    "\nReconnecting the model in use before also failed:\n",
+                ));
+                details.push_str(&system_error_details(restore_error));
+                gettextrs::gettext(
+                    "The change could not be made, and no model is connected now. Choose one again.",
+                )
+            } else {
+                gettextrs::gettext("The change could not be made.")
+            }
+        }
+        SwitchOutcome::Busy {
+            change,
+            final_snapshot,
+        } => {
+            push_final_connections(&mut details, Some(final_snapshot), None);
+            details.push_str(&gettextrs::gettext("snapd is still working on:\n"));
+            details.push_str(&diagnostics::redact_text(change));
+            gettextrs::gettext(
+                "The system is still installing or updating this model or Myna. Try again once it is done.",
+            )
         }
         SwitchOutcome::Disagreed {
             completed,
@@ -4095,19 +4185,19 @@ mod tests {
 
     #[test]
     fn a_model_is_described_by_its_subtitle_then_its_pill() {
-        assert_eq!(model_description(None, None), None);
-        assert_eq!(model_description(Some(""), None), None);
+        assert_eq!(model_description(&[None, None]), None);
+        assert_eq!(model_description(&[Some(""), None]), None);
         assert_eq!(
-            model_description(Some("Fast"), None),
+            model_description(&[Some("Fast"), None]),
             Some("Fast".to_owned())
         );
         assert_eq!(
-            model_description(None, Some("Recommended")),
+            model_description(&[None, Some("Recommended")]),
             Some("Recommended".to_owned())
         );
         assert_eq!(
-            model_description(Some("Fast"), Some("Recommended")),
-            Some("Fast\nRecommended".to_owned())
+            model_description(&[Some("Fast"), Some("Installing 5%"), Some("Recommended")]),
+            Some("Fast\nInstalling 5%\nRecommended".to_owned())
         );
     }
 
@@ -4424,6 +4514,7 @@ mod tests {
             ),
             final_snapshot: None,
             discovery_error: Some(unread.clone()),
+            restore_error: None,
         });
         assert_eq!(summary, "The change could not be made.");
         for fact in [
@@ -4467,6 +4558,160 @@ mod tests {
         );
         assert!(details.contains("No snapd operations completed."));
         assert!(details.ends_with("snap connections failed"));
+    }
+
+    #[test]
+    fn a_switch_that_did_not_take_is_logged_in_snapds_words() {
+        let parakeet = BackendIdentity::new("myna-parakeet", "provider");
+        let snapshot = crate::domain::ConnectionSnapshot::new(
+            vec![parakeet.clone()],
+            ActiveBackendState::Connected(parakeet),
+        );
+        let refused = |message: &str| {
+            crate::ports::SystemConfiguratorError::snapd_execution(
+                "POST /v2/interfaces",
+                Some(409),
+                message,
+            )
+        };
+        let unread = crate::domain::BackendSurfaceError::new(
+            crate::domain::BackendSurface::Connections,
+            "snapd went away",
+            "",
+        );
+        for (outcome, logged) in [
+            (
+                SwitchOutcome::Busy {
+                    change: "Install \"myna-whisper\" snap".to_owned(),
+                    final_snapshot: snapshot.clone(),
+                },
+                Some("snapd is still busy with \"Install \"myna-whisper\" snap\""),
+            ),
+            (
+                SwitchOutcome::Failed {
+                    completed: Vec::new(),
+                    error: refused("installing"),
+                    final_snapshot: None,
+                    discovery_error: None,
+                    restore_error: Some(Box::new(refused("refreshing"))),
+                },
+                Some("privileged configuration failed: installing; reconnecting the previous model failed: privileged configuration failed: refreshing"),
+            ),
+            (
+                SwitchOutcome::Failed {
+                    completed: Vec::new(),
+                    error: refused("installing"),
+                    final_snapshot: None,
+                    discovery_error: None,
+                    restore_error: None,
+                },
+                Some("privileged configuration failed: installing"),
+            ),
+            (
+                SwitchOutcome::Disagreed {
+                    completed: Vec::new(),
+                    final_snapshot: snapshot.clone(),
+                },
+                Some("the connections do not match it"),
+            ),
+            (
+                SwitchOutcome::StaleDiscovery {
+                    final_snapshot: snapshot.clone(),
+                },
+                Some("the connections changed first"),
+            ),
+            (
+                SwitchOutcome::FinalDiscoveryFailed {
+                    completed: Vec::new(),
+                    error: unread,
+                },
+                Some("snapd went away"),
+            ),
+            (
+                SwitchOutcome::Applied {
+                    completed: Vec::new(),
+                    final_snapshot: snapshot.clone(),
+                },
+                None,
+            ),
+            (
+                SwitchOutcome::Noop {
+                    final_snapshot: snapshot.clone(),
+                },
+                None,
+            ),
+            (
+                SwitchOutcome::Cancelled {
+                    completed: Vec::new(),
+                    final_snapshot: Some(snapshot.clone()),
+                    discovery_error: None,
+                },
+                None,
+            ),
+        ] {
+            assert_eq!(switch_failure_log(&outcome).as_deref(), logged, "{outcome:?}");
+        }
+    }
+
+    /// Issue #51: what held a switch, and a model that could not be put
+    /// back, are each said.
+    #[test]
+    fn a_switch_report_names_what_held_it_and_a_model_not_put_back() {
+        let parakeet = BackendIdentity::new("myna-parakeet", "provider");
+        let connected = crate::domain::ConnectionSnapshot::new(
+            vec![parakeet.clone()],
+            ActiveBackendState::Connected(parakeet.clone()),
+        );
+        let (summary, details) = switch_report(&SwitchOutcome::Busy {
+            change: "Install \"myna-whisper\" snap from \"edge\" channel".to_owned(),
+            final_snapshot: connected,
+        });
+        assert_eq!(
+            summary,
+            "The system is still installing or updating this model or Myna. Try again once it is done."
+        );
+        assert!(
+            details.contains("Final connections: connected"),
+            "{details}"
+        );
+        assert!(
+            details.ends_with(
+                "snapd is still working on:\nInstall \"myna-whisper\" snap from \"edge\" channel"
+            ),
+            "{details}"
+        );
+
+        let none = crate::domain::ConnectionSnapshot::new(
+            vec![parakeet],
+            ActiveBackendState::Disconnected,
+        );
+        let refused = |message: &str| {
+            crate::ports::SystemConfiguratorError::snapd_execution(
+                "POST /v2/interfaces",
+                Some(409),
+                message,
+            )
+        };
+        let (summary, details) = switch_report(&SwitchOutcome::Failed {
+            completed: Vec::new(),
+            error: refused("whisper is installing"),
+            final_snapshot: Some(none),
+            discovery_error: None,
+            restore_error: Some(Box::new(refused("myna is refreshing"))),
+        });
+        assert_eq!(
+            summary,
+            "The change could not be made, and no model is connected now. Choose one again."
+        );
+        let switch = details.find("whisper is installing").expect(&details);
+        let restore = details
+            .find("Reconnecting the model in use before also failed:")
+            .expect(&details);
+        assert!(switch < restore, "{details}");
+        assert!(
+            details[restore..].contains("myna is refreshing"),
+            "{details}"
+        );
     }
 
     #[test]
@@ -5067,6 +5312,78 @@ mod tests {
             snapd.downloading.set(None);
             settle(|| model_titles(&ui) == ["Parakeet", "Whisper"]);
             reopened.force_close();
+            window.destroy();
+        });
+    }
+
+    /// The Whisper row's radio, and what its install control says while it
+    /// shows.
+    fn whisper_row(ui: &BackendUi) -> (gtk::CheckButton, Option<String>) {
+        let rows = ui.model_rows.borrow();
+        let row = rows
+            .iter()
+            .find(|row| row.backend.snap_name() == "myna-whisper")
+            .expect("Whisper listed");
+        let progress = row.install.progress();
+        let shown = (row.install.is_visible() && progress.container.is_visible()).then(|| {
+            assert!(progress.spinner.is_spinning());
+            progress.label.label().to_string()
+        });
+        (row.radio.clone().expect("a radio"), shown)
+    }
+
+    /// Issue #51: Whisper's slot lists while snapd is still installing it.
+    /// Choosing it then disconnected Parakeet and left no model, since snapd
+    /// refuses the connect until the install is done. On (re)opening, the
+    /// row says it is installing, cannot be chosen, and can once it is done.
+    #[test]
+    fn a_model_still_installing_shows_its_progress_and_cannot_be_chosen() {
+        on_gtk_thread(|| {
+            ui::register_resources();
+            let repository = Rc::new(ChangingRepository {
+                machine: RefCell::new(PARAKEET_CONNECTED_WHISPER_INSTALLED),
+                reads: std::cell::Cell::new(0),
+            });
+            let snapd = Rc::new(InstallMachine::new(Rc::clone(&repository)));
+            snapd.pending.borrow_mut().push("myna-whisper".to_owned());
+            snapd.downloading.set(Some(23));
+            let controller = BackendController::new(repository);
+            let TestUi { ui, .. } =
+                test_ui_ports(controller, Some(ui::MynaPage::new()), None, snapd.clone());
+            ui.controller.observe({
+                let ui = Rc::downgrade(&ui);
+                move |event| {
+                    if let Some(ui) = ui.upgrade() {
+                        ui.on_controller_event(event);
+                    }
+                }
+            });
+            let window = adw::Window::builder().content(&ui.overlay).build();
+            window.present();
+
+            ui.trigger_discovery();
+            settle(|| {
+                model_titles(&ui) == ["Parakeet", "Whisper"]
+                    && whisper_row(&ui).1.as_deref() == Some("Installing 23%")
+            });
+            let (radio, shown) = whisper_row(&ui);
+            assert_eq!(shown.as_deref(), Some("Installing 23%"));
+            assert!(
+                !radio.is_sensitive(),
+                "an installing model cannot be chosen"
+            );
+            assert_eq!(install_hint(&ui).as_deref(), Some("Installing Whisper 23%"));
+
+            // Even asked directly, nothing switches: the fake panics if it does.
+            ui.begin_backend_switch(BackendIdentity::new("myna-whisper", "provider"));
+            assert_eq!(ui.active_backend.switching_to(), None);
+
+            snapd.downloading.set(None);
+            settle(|| whisper_row(&ui).1.is_none() && whisper_row(&ui).0.is_sensitive());
+            let (radio, shown) = whisper_row(&ui);
+            assert_eq!(shown, None);
+            assert!(radio.is_sensitive(), "chosen like any other once installed");
+            assert_eq!(install_hint(&ui), None);
             window.destroy();
         });
     }
