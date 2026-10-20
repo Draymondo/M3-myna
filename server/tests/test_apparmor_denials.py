@@ -102,6 +102,16 @@ PORTAL = (
 )
 
 
+RTKIT = (
+    "Oct 20 20:24:04.647567 myna-e2e-noble-run kernel: audit: type=1107 "
+    "audit(1792527844.642:191): pid=835 uid=101 auid=4294967295 ses=4294967295 "
+    'subj=unconfined msg=\'apparmor="DENIED" operation="dbus_method_call"  bus="system" '
+    'path="/org/freedesktop/RealtimeKit1" interface="org.freedesktop.RealtimeKit1" '
+    'member="MakeThreadRealtimeWithPID" mask="send" name="org.freedesktop.RealtimeKit1" '
+    'pid=2647 label="snap.myna.myna" peer_pid=1330 peer_label="unconfined"'
+)
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -111,6 +121,8 @@ PORTAL = (
         kernel("snap.myna.hud", "/etc/vulkan/icd.d/", "myna-hud"),
         kernel("snap.myna.hud", "/etc/vulkan/implicit_layer.d/", "myna-hud"),
         PORTAL,
+        RTKIT,
+        CAPABLE,
     ],
 )
 def test_known_harmless_denials_are_allowed(line):
@@ -128,6 +140,10 @@ def test_known_harmless_denials_are_allowed(line):
         kernel("snap.myna.hud", "/etc/vulkan/icd.d/nvidia.json", "myna-hud"),
         PORTAL.replace("snap.myna.hud", "snap.myna.myna"),
         PORTAL.replace('member="Register"', 'member="Unregister"'),
+        RTKIT.replace('bus="system"', 'bus="session"'),
+        RTKIT.replace("snap.myna.myna", "snap.myna.hud"),
+        CAPABLE.replace('capname="dac_override"', 'capname="sys_admin"'),
+        CAPABLE.replace("hook.install", "server"),
         dbus("snap.myna.myna", "unconfined"),
         dbus("snap.myna.myna", "snap.myna.hud"),
         dbus("snap.myna.hud", "desktop-icons-ng"),
