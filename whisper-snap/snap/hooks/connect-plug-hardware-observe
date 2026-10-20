@@ -1,12 +1,15 @@
 #!/bin/bash -eu
 
-# shellcheck disable=SC2034  # used via process substitution below
 tag="snap.$SNAP_INSTANCE_NAME.hook.connect-plug-hardware-observe"
 
-# Redirect stdout to stdout+syslog
-exec 1> >(tee >(logger --tag="$tag"))
-# Redirect stderr to stderr+syslog
-exec 2> >(logger --stderr --priority error --tag="$tag")
+# Stdout and stderr also go to the journal, through pipes: redirecting to
+# >(...) opens /dev/fd/N with O_CREAT, which AppArmor logs as a denial.
+if [ -z "${MYNA_HOOK_LOGGED:-}" ]; then
+    set -o pipefail
+    { MYNA_HOOK_LOGGED=1 "$0" "$@" 2>&1 1>&3 3>&- | logger --stderr --priority error --tag="$tag"; } 3>&1 \
+        | logger --stderr --tag="$tag"
+    exit
+fi
 
 # The install hook cannot score hardware without this plug, so a snap installed
 # before it was connected (a sideload, or a store grant that arrived by refresh)
