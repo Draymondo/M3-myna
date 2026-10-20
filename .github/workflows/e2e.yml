@@ -128,8 +128,12 @@ jobs:
         with:
           name: myna-snap
           path: myna-snap
-      # Before the workshop, which runs on the same LXD.
+      # Before the workshop, which runs on the same LXD. launch-workshop
+      # refreshes any other channel to 6/stable, and a downgrade from
+      # setup-lxd's latest/candidate leaves `lxd waitready` hanging.
       - uses: canonical/setup-lxd@v1
+        with:
+          channel: 6/stable
       - uses: ./.github/actions/apt-cache
         with:
           workshop: myna-noble
