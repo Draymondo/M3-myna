@@ -1,8 +1,10 @@
 # Preface
 
-Read this document before treating Parakeet's window-collapse rate as a port
-bug, tuning ONNX Runtime CUDA execution, re-attempting an fp16 Parakeet
-export, or reviving the Nemotron 3.5 ASR evaluation.
+Read this document before evaluating a model or a change to one (new
+backend, quantisation, export, runtime or execution provider), treating
+Parakeet's window-collapse rate as a port bug, tuning ONNX Runtime CUDA
+execution, re-attempting an fp16 Parakeet export, or reviving the Nemotron
+3.5 ASR evaluation.
 
 Read the top-level `.kb/agents.md` file before continuing below.
 
@@ -16,7 +18,62 @@ from zephyrus (RTX 4080 Laptop 12 GB, driver 595) on the 82-clip
 
 # Important
 
+## Evaluating a change
+
+Decide first which question is being asked; they need different evidence.
+Every number comes from `myna.benchmarker` runs that pass `make bench-check`
+(`server/.kb/benchmarking.md`).
+
+### Same model, different numerics
+
+Quantisation, export, kernel, ONNX Runtime version or execution provider:
+"did it break?". Against the shipped artifact:
+
+1. Controls first: an identical rerun, and if possible a trivially
+   perturbed one, give the churn floor everything else is read against.
+2. Accuracy: `myna-bench compare` on the balanced corpus; the WER delta
+   must not be worse beyond its interval. Read the per-clip diffs: noise is
+   symmetric and sits on short or marginal clips, damage is directional
+   (clean clips regress with nothing offsetting).
+3. Failure modes: each known pathology's rate is not worse, and its churn
+   is symmetric. A skew is a signal even in the good direction: the
+   rejected 2026-08 T07 encoder collapsed less (8 windows regressed, 29
+   fixed) while its WER got systematically worse.
+4. Speed and resources: distributions over repeats, never one number.
+5. Runtime nets such as `_transcribe_guarded` stay regardless.
+
+Never gate a knife-edge metric on zero regressions. Collapse flips on
+ulp-scale differences (a metadata-only kernel swap moved ~10 of 557
+windows both ways; a rerun moved none), so a zero-regression bar admits only
+bit-identical changes. A probe that only counts failures cannot localise
+them; per-clip WER on sentinel clips with bisection over the change's parts
+can (it found the one damaging FFN node of eleven).
+
+### New model or backend
+
+"Is it better for users?":
+
+1. Validate the pipeline: a full publication preset must land within
+   interval of the model's published numbers; if not, suspect our
+   adapter, frontend or scoring before the model.
+2. Product numbers: WER/CER per language and `--by-category`, finalize
+   latency at `pace: realtime`, cold load, RAM/VRAM and J per audio-second,
+   on each hardware tier the engine targets. `USABILITY_FAIL` is a result.
+3. Find the model's own pathology before trusting its averages, then probe
+   it: Parakeet goes blank over windows (below), Fun-ASR-Nano's int8
+   export truncates past ~24 s and hallucinates on noise. Long-form and noise categories catch some
+   of this; the balanced corpus has no speech-free clip, so hallucination on
+   silence needs its own clips.
+
+Collapse is probed by `dev/parakeet/collapse_probe.py`, outside the
+benchmarker (no guard, provenance or `compare`); fold failure-mode probes
+into the benchmarker when the next evaluation needs one.
+
 ## Parakeet v3 window collapse is the model's
+
+A window collapses when it yields under 0.5 tokens per second of audio
+(`_COLLAPSE_WORDS_PER_SECOND`, shared by the probe and the runtime retry).
+It is a window-boundary effect, not a per-clip one.
 
 557 sliding windows (3-16 s) over concatenated real speech: NeMo PyTorch
 collapses 58/557 (10.4%), our ONNX fp32 60/557 (10.8%), 51 windows collapse
