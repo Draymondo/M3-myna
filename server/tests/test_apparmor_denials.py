@@ -85,9 +85,49 @@ def test_named_unconfined_peer_is_allowed_on_our_path():
     assert sum(allowed.values()) == 1
 
 
+def kernel(profile: str, name: str, comm: str = "python3") -> str:
+    return (
+        KERNEL.replace("snap.myna-parakeet.server", profile)
+        .replace("/sys/fs/cgroup/system.slice/memory.high", name)
+        .replace('comm="python3"', f'comm="{comm}"')
+    )
+
+
+PORTAL = (
+    'Oct 14 17:37:52.161008 framework dbus-broker[1213517]: apparmor="DENIED" '
+    'operation="dbus_method_call" bus="session" path="/org/freedesktop/portal/desktop" '
+    'interface="org.freedesktop.host.portal.Registry" member="Register" mask="send" '
+    'name="org.freedesktop.portal.Desktop" pid=2 label="snap.myna.hud" peer_pid=3 '
+    'peer_label="unconfined"'
+)
+
+
 @pytest.mark.parametrize(
     "line",
     [
+        kernel("snap.myna.testbed", "/sys/fs/cgroup/user.slice/user-1000.slice/cpu.max"),
+        kernel("snap.myna.myna", "/sys/fs/cgroup/cpu.max"),
+        kernel("snap.myna-whisper.whisper", "/proc/sys/kernel/arch", "whisper"),
+        kernel("snap.myna.hud", "/etc/vulkan/icd.d/", "myna-hud"),
+        kernel("snap.myna.hud", "/etc/vulkan/implicit_layer.d/", "myna-hud"),
+        PORTAL,
+    ],
+)
+def test_known_harmless_denials_are_allowed(line):
+    unexpected, allowed = ad.check([line])
+    assert not unexpected
+    assert sum(allowed.values()) == 1
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        kernel("snap.myna.testbed", "/sys/fs/cgroup/user.slice/memory.max"),
+        kernel("snap.myna.testbed", "/sys/fs/cgroup/user.slice/cpu.max.evil"),
+        kernel("snap.myna-whisper.server", "/etc/vulkan/icd.d/"),
+        kernel("snap.myna.hud", "/etc/vulkan/icd.d/nvidia.json", "myna-hud"),
+        PORTAL.replace("snap.myna.hud", "snap.myna.myna"),
+        PORTAL.replace('member="Register"', 'member="Unregister"'),
         dbus("snap.myna.myna", "unconfined"),
         dbus("snap.myna.myna", "snap.myna.hud"),
         dbus("snap.myna.hud", "desktop-icons-ng"),

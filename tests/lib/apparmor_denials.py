@@ -62,6 +62,35 @@ ALLOWED: tuple[Allowed, ...] = (
         },
         "snapd's dbus slot admits only label=unconfined peers (LP: #2171555, myna#53)",
     ),
+    Allowed(
+        {"operation": "open", "name": r"/sys/fs/cgroup/(.+/)?cpu\.max"},
+        "Rust std's available_parallelism walks every ancestor cgroup's cpu.max"
+        " and skips what it cannot read",
+    ),
+    Allowed(
+        {"operation": "open", "name": r"/proc/sys/kernel/arch"},
+        "snapd's base template grants osrelease and ostype but not arch;"
+        " modelctl's lscompute falls back to uname(2)",
+    ),
+    Allowed(
+        {
+            "subject": r"snap\.myna\.hud",
+            "operation": "open",
+            "name": r"/etc/vulkan/(icd|implicit_layer|explicit_layer)\.d/",
+        },
+        "the Vulkan loader lists the host's /etc/vulkan, which libvulkan1 ships"
+        " empty; the HUD's drivers come from gpu-2404",
+    ),
+    Allowed(
+        {
+            "subject": r"snap\.myna\.hud",
+            "operation": "dbus_method_call",
+            "interface": r"org\.freedesktop\.host\.portal\.Registry",
+            "member": "Register",
+        },
+        "GTK before f4206d04 takes a snap for unsandboxed and registers it with"
+        " the portal, ignoring the error",
+    ),
 )
 
 
