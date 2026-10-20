@@ -32,6 +32,7 @@ on:
       - "fake-snap/**"
       - "spread.yaml"
       - "tests/spread/**"
+      - "tests/lib/**"
       - ".github/workflows/spread.yml"
 
 # Pinned upstream commit (decision record; bump deliberately).

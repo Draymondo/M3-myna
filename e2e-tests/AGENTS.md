@@ -99,6 +99,10 @@ manual-test VM; it only ever copies the `installed` snapshot of an e2e VM.
 - A dictation case ends when the daemon says so (`State`), never after a
   sleep; the only sleeps are negative checks ("nothing arrived"), which wait
   out the time text would have taken.
+- A suite also fails when its VM's journal holds an AppArmor denial of one of
+  our snaps (`tests/lib/apparmor_denials.py`, run by `run-suite.sh` on the
+  journal it saves). The inference snaps come from edge, so their denials
+  count too.
 - Snapshots are taken stopped. A suite that needs a new machine state gets a
   new provisioning stage, not setup in the suite.
 - `tools/` descends from the prototypes in `~/myna-onboarding-stable/tools`;

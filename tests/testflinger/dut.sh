@@ -27,3 +27,8 @@ apt-get install -y -q python3-venv
 BENCH="python3 $HERE/../../myna-bench.pyz"
 $BENCH run --config "$HERE/fleurs.yaml"
 $BENCH summarize --in fleurs.jsonl --no-ci --by-category --gate "$HERE/ceilings.yaml"
+
+# Last, so the window is the whole run: the machine was deployed for it.
+journalctl -b --no-pager > journal.log
+python3 -I "$HERE/../lib/apparmor_denials.py" journal.log > apparmor.out || { cat apparmor.out; exit 1; }
+cat apparmor.out

@@ -115,6 +115,11 @@ echo "the HUD did not stop" >&2; exit 1'
     fi
     lxc exec "$RUN" -- journalctl -b --no-pager -o short-precise > "$ARTIFACTS/journal.log" || true
     lxc delete --force "$RUN"
+    # The copy booted for this suite, so its whole boot is the suite's window.
+    if ! python3 -I "$REPO/tests/lib/apparmor_denials.py" "$ARTIFACTS/journal.log"; then
+        echo "== $SUITE: AppArmor denials"
+        rc=1
+    fi
 done
 echo "== artifacts in $RUN_DIR/artifacts"
 exit $rc

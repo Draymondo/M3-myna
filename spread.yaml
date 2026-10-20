@@ -85,3 +85,10 @@ exclude:
 suites:
     tests/spread/:
         summary: Confined end-to-end tests
+        # Every task also fails on an AppArmor denial of our snaps, its own
+        # restore included (tests/lib/apparmor_denials.py).
+        prepare-each: |
+            journalctl -n 0 --show-cursor --no-pager | sed -n 's/^-- cursor: //p' > /root/apparmor.cursor
+        restore-each: |
+            journalctl --after-cursor "$(cat /root/apparmor.cursor)" --no-pager \
+                | python3 -I "$SPREAD_PATH/tests/lib/apparmor_denials.py"
