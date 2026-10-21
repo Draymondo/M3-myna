@@ -13,6 +13,7 @@ The repository also contains model evaluation, benchmarking, packaging, and desk
 # Important
 
 - A change is done when `make check` and `make test-<component>` are green for every component touched, and `make coverage-gate` passes its patch gate when logic was added or moved. `make preflight` is the merge bar. The rules, the red/green test discipline and when to reach for mutation testing are in `.kb/verification.md`.
+- Never start a headless or nested GNOME Shell (or a GTK app on a private bus) on the host except through `dev/nested-session.sh`, scratch probes included. Under a bare `dbus-run-session` it spawns its own AT-SPI bus launcher in the host's `XDG_RUNTIME_DIR`, which replaces the desktop's live a11y socket and leaves Orca unable to start until the user logs out.
 - Everything built from the tree carries one version, `dev/version.sh`'s, derived from the last `vX.Y.Z` tag: the snaps, the deb, the client binaries and the extension tarball. Releasing is tagging; the Cargo and pyproject `0.0.0` versions are placeholders, never bumped. Never hardcode a version in packaging. See `.kb/versioning.md`, and `.kb/releasing.md` for cutting a release.
 
 # Architecture
