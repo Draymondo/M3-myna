@@ -469,6 +469,10 @@ pub(crate) fn snapd_error_to_system_error(
     }
 }
 
+/// What pkexec(1) prints, untranslated, after refusing an environment
+/// variable it would pass on; it exits 127 as for a denial.
+const PKEXEC_ENVIRONMENT_REFUSED: &str = "This incident has been reported.";
+
 /// Run the whole plan as root under a single `pkexec`. The executor prints
 /// one result per operation it ran, stopping at the first failure, so a
 /// partial apply still reports exactly which commands completed.
@@ -500,7 +504,11 @@ async fn execute_plan(
     // No deadline: the prompt waits on the user and a model download on the
     // network, and once authorized the executor is root, which this process
     // cannot stop, so giving up on it would only misreport the outcome.
-    let request = CommandRequest::new("pkexec".to_owned(), arguments.clone()).without_timeout();
+    // pkexec refuses a SHELL missing from /etc/shells, and the executor
+    // runs no shell (#74).
+    let request = CommandRequest::new("pkexec".to_owned(), arguments.clone())
+        .without_inherited("SHELL")
+        .without_timeout();
     match runner.run(request, cancellation).await {
         Ok(output) => match apply_plan::decode_results(output.stdout()) {
             Ok(results) => Ok(results),
@@ -526,6 +534,19 @@ async fn execute_plan(
                 return Err(SystemConfiguratorFailure::new(
                     Vec::new(),
                     SystemConfiguratorError::Cancelled,
+                ));
+            }
+            if exit_status == Some(127) && stderr.contains(PKEXEC_ENVIRONMENT_REFUSED) {
+                let message = primary_detail(&stderr, &stdout);
+                return Err(SystemConfiguratorFailure::new(
+                    Vec::new(),
+                    SystemConfiguratorError::execution(
+                        "pkexec",
+                        arguments,
+                        exit_status,
+                        stderr,
+                        message,
+                    ),
                 ));
             }
             if exit_status == Some(127) {
@@ -759,6 +780,50 @@ mod tests {
                 } if stderr == message
             ));
         }
+    }
+
+    /// pkexec also exits 127, before any prompt, when an environment
+    /// variable it passes on fails its checks; polkit refused nothing (#74).
+    #[test]
+    fn a_pkexec_refusal_of_the_environment_is_an_execution_failure() {
+        let stderr = "The value for environment variable TERM contains suspicious content\n\n\
+                      This incident has been reported.\n";
+        let runner = FakeCommandRunner::scripted([Err(CommandError::NonZero {
+            exit_status: Some(127),
+            stdout: String::new(),
+            stderr: stderr.to_owned(),
+        })]);
+        let adapter = PkexecSystemConfigurator::new(Arc::new(runner));
+
+        let error = block_on(adapter.apply_backend_config(&preview(), CancellationToken::new()))
+            .unwrap_err();
+
+        assert!(matches!(
+            error.error(),
+            SystemConfiguratorError::Execution {
+                step: FailedStep::Command {
+                    exit_status: Some(127),
+                    ..
+                },
+                message,
+            } if message == stderr.trim()
+        ));
+    }
+
+    /// pkexec refuses a `SHELL` missing from /etc/shells, and the executor
+    /// runs no shell, so it never sees the user's (#74).
+    #[test]
+    fn pkexec_runs_without_the_users_shell() {
+        let runner = FakeCommandRunner::scripted([Ok(CommandOutput::new(
+            Some(0),
+            plan_output(preview().operations(), None),
+            "",
+        ))]);
+        let adapter = PkexecSystemConfigurator::new(Arc::new(runner.clone()));
+
+        block_on(adapter.apply_backend_config(&preview(), CancellationToken::new())).unwrap();
+
+        assert!(runner.calls()[0].removed_environment().contains("SHELL"));
     }
 
     #[test]
