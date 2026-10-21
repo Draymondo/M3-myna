@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::poll_fn;
 use std::io;
 use std::sync::{
@@ -18,6 +18,7 @@ pub struct CommandRequest {
     executable: String,
     arguments: Vec<String>,
     environment: BTreeMap<String, String>,
+    removed: BTreeSet<String>,
     timeout: Option<Duration>,
 }
 
@@ -27,12 +28,19 @@ impl CommandRequest {
             executable,
             arguments,
             environment: BTreeMap::new(),
+            removed: BTreeSet::new(),
             timeout: Some(Duration::from_secs(30)),
         }
     }
 
     pub fn with_environment(mut self, environment: BTreeMap<String, String>) -> Self {
         self.environment = environment;
+        self
+    }
+
+    /// Keep `name` out of the environment the process inherits from this one.
+    pub fn without_inherited(mut self, name: &str) -> Self {
+        self.removed.insert(name.to_owned());
         self
     }
 
@@ -61,6 +69,10 @@ impl CommandRequest {
 
     pub fn environment(&self) -> &BTreeMap<String, String> {
         &self.environment
+    }
+
+    pub fn removed_environment(&self) -> &BTreeSet<String> {
+        &self.removed
     }
 }
 
@@ -308,6 +320,9 @@ async fn run_process(
 
     let launcher =
         SubprocessLauncher::new(SubprocessFlags::STDOUT_PIPE | SubprocessFlags::STDERR_PIPE);
+    for name in &request.removed {
+        launcher.unsetenv(name);
+    }
     for (name, value) in &request.environment {
         launcher.setenv(name, value, true);
     }

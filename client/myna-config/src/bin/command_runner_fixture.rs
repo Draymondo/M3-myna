@@ -10,6 +10,10 @@ fn main() {
             std::process::exit(23);
         }
         Some("--sleep") => std::thread::sleep(Duration::from_secs(10)),
+        Some("--variable") => match std::env::var(&arguments[1]) {
+            Ok(value) => println!("{value}"),
+            Err(_) => println!("unset"),
+        },
         Some("--invalid-stdout") => {
             io::stdout().write_all(&[0xff]).unwrap();
         }

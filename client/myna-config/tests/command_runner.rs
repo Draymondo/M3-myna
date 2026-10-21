@@ -56,6 +56,19 @@ fn preserves_arguments_without_shell_interpretation_and_applies_environment() {
 }
 
 #[test]
+fn removes_an_inherited_variable() {
+    let inherited = run(request(&["--variable", "PATH"]), CancellationToken::new()).unwrap();
+    let removed = run(
+        request(&["--variable", "PATH"]).without_inherited("PATH"),
+        CancellationToken::new(),
+    )
+    .unwrap();
+
+    assert_ne!(inherited.stdout(), "unset\n");
+    assert_eq!(removed.stdout(), "unset\n");
+}
+
+#[test]
 fn reports_non_zero_exit_with_captured_output() {
     let error = run(request(&["--fail"]), CancellationToken::new()).unwrap_err();
 
