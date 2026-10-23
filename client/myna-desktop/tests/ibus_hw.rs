@@ -149,11 +149,16 @@ struct Field {
 
 impl Field {
     async fn open(purpose: u32, hints: u32) -> Self {
-        let address = std::env::var("IBUS_ADDRESS").expect("IBUS_ADDRESS from dev/gated-tests.sh");
-        Self::open_at(&address, purpose, hints).await
+        Self::open_as("myna-ibus-hw", purpose, hints).await
     }
 
-    async fn open_at(address: &str, purpose: u32, hints: u32) -> Self {
+    /// A field whose context the daemon names `client` to the engine.
+    async fn open_as(client: &str, purpose: u32, hints: u32) -> Self {
+        let address = std::env::var("IBUS_ADDRESS").expect("IBUS_ADDRESS from dev/gated-tests.sh");
+        Self::open_at(&address, client, purpose, hints).await
+    }
+
+    async fn open_at(address: &str, client: &str, purpose: u32, hints: u32) -> Self {
         let conn = zbus::conn::Builder::address(address)
             .expect("parse IBUS_ADDRESS")
             .max_queued(1024)
@@ -168,7 +173,7 @@ impl Field {
                 IBUS_PATH,
                 Some(IBUS_SERVICE),
                 "CreateInputContext",
-                &("myna-ibus-hw",),
+                &(client,),
             )
             .await
             .expect("CreateInputContext")
@@ -671,6 +676,61 @@ async fn ordinary_field_receives_preedit_and_commit() {
     field.close().await;
 }
 
+/// 600 characters of numbered words, more than two XIM pieces' worth.
+fn long_text() -> String {
+    (1..=120).map(|i| format!("w{i:03} ")).collect()
+}
+
+/// #73: an XIM client's long commit arrives in pieces a Windows application
+/// under Wine reads whole, each ending between words.
+#[tokio::test]
+async fn a_long_commit_reaches_an_xim_field_in_pieces() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let mut field = Field::open_as("xim", 0, 0).await;
+    field.use_prior_engine().await;
+    let mut injector = IbusInjector::connect()
+        .await
+        .expect("connect to IBus daemon");
+    let mut target = injector.acquire().await.expect("acquire the XIM field");
+
+    let text = long_text();
+    target.commit(&text).await.expect("commit the long text");
+    let mut pieces: Vec<String> = Vec::new();
+    while pieces.concat().len() < text.len() {
+        match field.next().await {
+            Seen::Commit(piece) => pieces.push(piece),
+            other => panic!("expected a commit piece, got {other:?}"),
+        }
+    }
+    assert_eq!(pieces.concat(), text);
+    assert_eq!(pieces.len(), 3, "{pieces:?}");
+    assert!(pieces.iter().all(|p| p.encode_utf16().count() <= 255));
+    assert!(pieces.iter().all(|p| p.ends_with(' ')), "{pieces:?}");
+    field.expect_only_sentinel(target.as_mut()).await;
+
+    target.release().await;
+    field.close().await;
+}
+
+/// Any other field gets the long commit as one: on GNOME Wayland mutter keeps
+/// only the last of back-to-back commits.
+#[tokio::test]
+async fn a_long_commit_reaches_any_other_field_whole() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let (mut field, mut injector) = session(0, 0).await;
+    let mut target = injector.acquire().await.expect("acquire an ordinary field");
+
+    let text = long_text();
+    target.commit(&text).await.expect("commit the long text");
+    assert_eq!(field.next().await, Seen::Commit(text));
+    field.expect_only_sentinel(target.as_mut()).await;
+
+    target.release().await;
+    field.close().await;
+}
+
 /// The engine asks for the field's surrounding text on focus, and the target
 /// reports the character before the cursor, which separates a dictation from
 /// the one before it.
@@ -859,7 +919,7 @@ async fn the_first_activation_on_a_fresh_daemon_reaches_the_field() {
     skip_unless_ibus!();
     let _serial = exclusive().await;
     let daemon = FreshDaemon::start().await;
-    let mut field = Field::open_at(&daemon.address, 0, 0).await;
+    let mut field = Field::open_at(&daemon.address, "myna-ibus-hw", 0, 0).await;
     // The grab: focus leaves the field for the daemon's fake context.
     field.focus_out().await;
     let address = daemon.address.as_str().try_into().expect("address");

@@ -64,6 +64,16 @@ const FAKE_CLIENT: &str = "fake";
 /// its preedit goes out with no attributes.
 const SHELL_CLIENT: &str = "gnome-shell";
 
+/// The client string of ibus-x11's input contexts: X11 applications that take
+/// text over XIM, Wine among them (#73).
+const XIM_CLIENT: &str = "xim";
+
+/// The most UTF-16 units one commit to an XIM client carries. Wine hands each
+/// commit to the application as one IME result string, and Windows
+/// applications read it into fixed buffers: Qt's holds 256 units and drops
+/// the rest without error. One unit short leaves room for a terminator.
+const XIM_COMMIT_UNITS: usize = 255;
+
 /// How far apart a `FocusOut` and an activation may be to belong together. A
 /// global key grab on X11 sends the focused window FocusOut on the key's
 /// press, and the key's command reaches the daemon after it: 5-9 ms through
@@ -751,6 +761,9 @@ struct EngineState {
     /// carries no attributes ([`SHELL_CLIENT`]). Focus on any other field ends
     /// the lease, so this is the client of the field a lease writes to.
     shell_focused: AtomicBool,
+    /// Whether the last field focused by name is an XIM client's, whose
+    /// commits are split ([`XIM_COMMIT_UNITS`]).
+    xim_focused: AtomicBool,
 }
 
 impl EngineState {
@@ -770,6 +783,7 @@ impl EngineState {
             runtime: tokio::runtime::Handle::try_current().ok(),
             displaced: watch::Sender::new(None),
             shell_focused: AtomicBool::new(false),
+            xim_focused: AtomicBool::new(false),
         }
     }
 
@@ -793,9 +807,12 @@ impl EngineState {
 
     fn focus(self: &Arc<Self>, change: FocusChange<'_>) {
         match change {
-            FocusChange::In(Some(ctx)) if !ctx.is_fake() => self
-                .shell_focused
-                .store(ctx.client == SHELL_CLIENT, Ordering::Relaxed),
+            FocusChange::In(Some(ctx)) if !ctx.is_fake() => {
+                self.shell_focused
+                    .store(ctx.client == SHELL_CLIENT, Ordering::Relaxed);
+                self.xim_focused
+                    .store(ctx.client == XIM_CLIENT, Ordering::Relaxed);
+            }
             _ => {}
         }
         let blip = self.next_blip.fetch_add(1, Ordering::Relaxed);
@@ -1027,6 +1044,40 @@ impl EngineState {
     fn preedit_hint(&self) -> bool {
         !self.shell_focused.load(Ordering::Relaxed)
     }
+
+    /// The most UTF-16 units one commit to the focused field may carry.
+    fn commit_limit(&self) -> Option<usize> {
+        self.xim_focused
+            .load(Ordering::Relaxed)
+            .then_some(XIM_COMMIT_UNITS)
+    }
+}
+
+/// `text` in pieces of at most `limit` UTF-16 units, each ending after its
+/// last whitespace when it has one, so no word is split across commits.
+fn commit_pieces(text: &str, limit: usize) -> Vec<&str> {
+    let mut pieces = Vec::new();
+    let mut rest = text;
+    while rest.encode_utf16().count() > limit {
+        let mut units = 0;
+        let mut cut = 0;
+        let mut after_space = None;
+        for (i, c) in rest.char_indices() {
+            units += c.len_utf16();
+            if units > limit {
+                break;
+            }
+            cut = i + c.len_utf8();
+            if c.is_whitespace() {
+                after_space = Some(cut);
+            }
+        }
+        let cut = after_space.unwrap_or(cut);
+        pieces.push(&rest[..cut]);
+        rest = &rest[cut..];
+    }
+    pieces.push(rest);
+    pieces
 }
 
 /// What [`IbusInjector::activation`] hands out: it marks whatever lease is
@@ -1432,9 +1483,18 @@ impl IbusTarget {
             return Err(InjectError::SecureField);
         }
         self.state.wrote(self.lease);
-        self.emit("CommitText", &(ibus_text(text),))
-            .await
-            .map_err(|e| classify("CommitText", e))
+        // One commit elsewhere: mutter keeps only the last of back-to-back
+        // commits (mutter#5087), and XIM never reaches mutter's text-input.
+        let pieces = match self.state.commit_limit() {
+            Some(limit) => commit_pieces(text, limit),
+            None => vec![text],
+        };
+        for piece in pieces {
+            self.emit("CommitText", &(ibus_text(piece),))
+                .await
+                .map_err(|e| classify("CommitText", e))?;
+        }
+        Ok(())
     }
 
     async fn show_preedit(&mut self, text: &str) {
@@ -1643,6 +1703,46 @@ mod tests {
         assert!(!state.preedit_hint(), "still GNOME Shell's field");
         focus_in(&state, "/org/freedesktop/IBus/InputContext_3", "gtk3-im");
         assert!(state.preedit_hint());
+    }
+
+    /// #73: only an XIM client's commits are split, and the daemon's fake
+    /// context or an unnamed focus changes nothing.
+    #[test]
+    fn commit_limit_follows_the_focused_client() {
+        let state = engine_state();
+        assert_eq!(state.commit_limit(), None, "no field named yet");
+        focus_in(&state, "/org/freedesktop/IBus/InputContext_2", XIM_CLIENT);
+        assert_eq!(state.commit_limit(), Some(XIM_COMMIT_UNITS));
+        focus_in(&state, "/org/freedesktop/IBus/InputContext_1", FAKE_CLIENT);
+        state.focus(FocusChange::In(None));
+        state.focus(FocusChange::Out(None));
+        assert_eq!(
+            state.commit_limit(),
+            Some(XIM_COMMIT_UNITS),
+            "still the XIM field"
+        );
+        focus_in(&state, "/org/freedesktop/IBus/InputContext_3", SHELL_CLIENT);
+        assert_eq!(state.commit_limit(), None);
+    }
+
+    #[test]
+    fn commit_pieces_end_after_the_last_space_that_fits() {
+        assert_eq!(commit_pieces("ab cd ef", 6), ["ab cd ", "ef"]);
+        assert_eq!(commit_pieces("ab cd", 5), ["ab cd"], "fits whole");
+        assert_eq!(commit_pieces("", 5), [""]);
+    }
+
+    #[test]
+    fn commit_pieces_cut_a_word_longer_than_the_limit() {
+        assert_eq!(commit_pieces("abcdefg", 3), ["abc", "def", "g"]);
+    }
+
+    /// The limit counts UTF-16 units, as Windows does, and never splits a
+    /// character: `𝄞` is one character in two units.
+    #[test]
+    fn commit_pieces_count_utf16_units_whole_characters() {
+        assert_eq!(commit_pieces("é𝄞x", 3), ["é𝄞", "x"]);
+        assert_eq!(commit_pieces("ab𝄞", 3), ["ab", "𝄞"]);
     }
 
     fn engine(state: &Arc<EngineState>) -> EngineObject {
