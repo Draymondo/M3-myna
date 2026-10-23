@@ -1,6 +1,6 @@
 # CI for myna — runs the build+test suite inside the *same* Canonical Workshop
 # environments developers use locally (.workshop/*.yaml), so "green in CI"
-# means "green in the environment you develop in" (constitution Principle IV).
+# means "green in the environment you develop in".
 #
 # The launch-workshop action installs Workshop on the hosted runner and builds
 # one workshop per job. `myna` (Rust toolchain + uv + the in-project pipewire

@@ -22,7 +22,7 @@
 //! against a live IBus daemon with a focused input context, so it is proven by
 //! the env-gated suite (`MYNA_IBUS_TESTS=1`, `tests/ibus_hw.rs`, T017) and the
 //! manual spoken run (T021) — on the desktop VM and on hardware unchanged
-//! (Principle II). Activating the engine must never be done casually: it becomes
+//! Activating the engine must never be done casually: it becomes
 //! the user's global input method until restored.
 
 use std::collections::HashMap;

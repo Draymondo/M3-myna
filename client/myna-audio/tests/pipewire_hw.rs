@@ -1,8 +1,7 @@
 //! Env-gated integration suite for the native PipeWire backend and live device
 //! enumeration (feature 002-native-pipewire-backend). Runs against a real
 //! PipeWire graph — a virtual-audio VM profile (null-sink / `pw-loopback`
-//! source) in CI, or real hardware — the *identical* code on both
-//! (constitution Principle II).
+//! source) in CI, or real hardware — the *identical* code on both.
 //!
 //! Gate: set `MYNA_PIPEWIRE_TESTS=1` to run. Unset (the default, and CI without
 //! an audio server) → every test returns early as a no-op and says so, so the
@@ -1269,8 +1268,7 @@ async fn stopped_process_faults_as_lost_audio() {
 }
 
 mod watermarks {
-    //! T035: capture-path performance watermarks (constitution Principle III;
-    //! SC-006, SC-008, SC-009). Checked-in baselines with declared per-metric
+    //! T035: capture-path performance watermarks (SC-006, SC-008, SC-009). Checked-in baselines with declared per-metric
     //! tolerances, sensitive enough to flag drift, not only gross breakage.
     //! Full peak-RSS/CPU watermarking wants a sampling harness (matrix.py-style);
     //! this pins the two capture-path invariants that regress most visibly.

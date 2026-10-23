@@ -1,5 +1,5 @@
 // tests/watermarks.rs — the renderer's declared performance watermarks
-// (feature 004, T152; plan.md Performance Goals / constitution III).
+// (feature 004, T152; plan.md Performance Goals).
 //
 // These pin the DESIGN-CONTRACT constants that the plan's performance goals
 // name, so a tuning regression (a slowed cadence, a duration drifting out

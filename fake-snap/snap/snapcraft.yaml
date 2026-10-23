@@ -3,7 +3,7 @@
 # The honest confined topology for the spread confined-e2e: a backend snap
 # providing the `provider` content slot, serving the *fake* adapter (a
 # scripted transcript, no model, no GPU) so the end-to-end runs on any VM
-# (constitution II: no hardware dependency). Mirrors the real inference
+# with no hardware dependency. Mirrors the real inference
 # snaps' slot/socket layout exactly ($SNAP_COMMON/share/provider/myna.sock).
 #
 # Test-only: grade devel, never published.

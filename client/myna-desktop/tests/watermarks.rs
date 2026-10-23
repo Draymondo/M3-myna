@@ -1,4 +1,4 @@
-//! Performance watermarks (constitution Principle III).
+//! Performance watermarks.
 //!
 //! Checked-in latency baselines with declared tolerances. The **hermetic**
 //! watermark below runs everywhere (offline, in CI) and is a regression signal

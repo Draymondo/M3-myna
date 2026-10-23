@@ -2,7 +2,7 @@
 //! 004-gnome-shell-indicator).
 //!
 //! `myna-desktop` publishes dictation **state + level only** (never transcript
-//! text — constitution V) on the session bus for the GNOME Shell extension
+//! text) on the session bus for the GNOME Shell extension
 //! (`extensions/myna-shell/`), per `specs/004-gnome-shell-indicator/contracts/
 //! dbus-interface.md`. All publisher logic is written against the small [`Bus`]
 //! seam so the mapping/throttling is hermetic-testable over [`FakeBus`]

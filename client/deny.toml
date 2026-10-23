@@ -1,6 +1,6 @@
 # cargo-deny policy (feature 006, FR-011): mechanically codifies the offline
-# invariant — the shipped dictation client must not gain a network stack
-# (constitution Principle V). The sanctioned transport is WebSocket over a
+# invariant — the shipped dictation client must not gain a network stack.
+# The sanctioned transport is WebSocket over a
 # Unix domain socket (tokio-tungstenite, no TCP/TLS); HTTP/cloud client crates
 # are banned workspace-wide.
 #

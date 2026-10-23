@@ -41,7 +41,7 @@ pub const UBUNTU_ORANGE: &str = "#E95420";
 /// The design decision doc's specific override: when the ribbon's primary
 /// colour is orange, the darker/complementary secondary tone is a fixed
 /// Ubuntu-brand aubergine, not a generically-computed colour-wheel
-/// complement (2026-07-30 /speckit-analyze finding U2 — this had been
+/// complement (2026-07-30 spec analysis finding U2 — this had been
 /// dropped to a generic rule across the derived spec artifacts; reinstated
 /// to match the source design brief).
 pub const UBUNTU_AUBERGINE: &str = "#77216F";

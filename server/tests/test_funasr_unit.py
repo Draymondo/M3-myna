@@ -203,8 +203,7 @@ def test_default_model_dir_ignores_snapshot_without_tokenizer(monkeypatch, tmp_p
 
 def test_default_model_dir_error_names_the_fetch_script(monkeypatch, tmp_path):
     """Nothing staged must read as an actionable message, not a bare ImportError
-    from funasr_onnx's download fallback (constitution V: never fetch at
-    session time)."""
+    from funasr_onnx's download fallback (never fetch at session time)."""
     monkeypatch.setenv("MODELSCOPE_CACHE", str(tmp_path))
     with pytest.raises(FileNotFoundError, match="dev/fetch_funasr_model.py"):
         _default_model_dir()

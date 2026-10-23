@@ -5,8 +5,7 @@
 //! the segmented bar-meter helpers (`intensity_to_active_segments` /
 //! `segment_color`) that drive the classic `vumeter` HUD style's view.
 //!
-//! No GTK imports; carries energy only, never samples or content
-//! (constitution V, RC6).
+//! No GTK imports; carries energy only, never samples or content (RC6).
 
 /// Past this age with no fresh level, ease the VU to its floor rather than
 /// freezing on the last value (R5/SC-004).

@@ -24,7 +24,7 @@
 //! - **Application half** (Phase C): the window/pill UI, GLArea renderer,
 //!   D-Bus consumer, lab and simulator modes.
 //!
-//! Privacy invariant (constitution V): state + level only — nothing here
+//! Privacy invariant: state + level only — nothing here
 //! ever sees, renders, logs, or persists transcript content; no network.
 
 pub mod accent;

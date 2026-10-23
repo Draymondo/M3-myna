@@ -13,7 +13,7 @@
 //! ```
 //!
 //! It skips cleanly when the gate is unset, so the suite compiles and runs as a
-//! no-op offline (Principle II - identical code on the desktop VM and hardware).
+//! no-op offline; the same code runs on the desktop VM and hardware.
 
 use myna_desktop::dbus::serve::{ServeError, ZbusBus};
 use myna_desktop::dbus::BUS_NAME;

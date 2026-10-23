@@ -6,7 +6,7 @@
 //! pixels: colour, geometry, animation, icon choice. Swapping the look
 //! never touches this file.
 //!
-//! Nothing here ever carries transcript text (constitution V, RC6). The
+//! Nothing here ever carries transcript text (RC6). The
 //! publisher owns the content-free `StatusMessage` label for every visible
 //! state, so this module preserves it without translating or reformatting it.
 
