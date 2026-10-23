@@ -8,9 +8,7 @@ use crate::domain::{
     ActiveBackendState, BackendIdentity, BackendSurfaceError, CommandResult, ConnectionSnapshot,
 };
 use crate::operation_gate::{OperationCoordinator, OperationKind};
-use crate::ports::{
-    BackendRepository, SystemConfigurator, SystemConfiguratorError, SystemConfiguratorFailure,
-};
+use crate::ports::{BackendRepository, SystemConfigurator, SystemConfiguratorError};
 use crate::snap_changes::ApplyProgress;
 
 /// Myna's user service. Restarting it through the user's own systemd needs
@@ -236,7 +234,8 @@ pub async fn execute_switch(
         };
     }
     if cancellation.is_cancelled() {
-        return cancelled_after_refresh(Vec::new(), repository).await;
+        return settle_after_refresh(Vec::new(), SystemConfiguratorError::Cancelled, repository)
+            .await;
     }
     if let Some(change) = change_holding(plan, configurator).await {
         return SwitchOutcome::Busy {
@@ -263,7 +262,8 @@ pub async fn execute_switch(
             Err(error) => SwitchOutcome::FinalDiscoveryFailed { completed, error },
         },
         Err(failure) => {
-            let outcome = failed_after_refresh(failure, repository).await;
+            let (completed, error) = failure.into_parts();
+            let outcome = settle_after_refresh(completed, error, repository).await;
             restore_lost_model(plan, outcome, configurator, repository).await
         }
     }
@@ -546,57 +546,27 @@ async fn wait_for_snapd(
     }
 }
 
-async fn cancelled_after_refresh(
+async fn settle_after_refresh(
     completed: Vec<CommandResult>,
+    error: SystemConfiguratorError,
     repository: &dyn BackendRepository,
 ) -> SwitchOutcome {
-    match repository.refresh(CancellationToken::new()).await {
-        Ok(snapshot) => SwitchOutcome::Cancelled {
+    let (final_snapshot, discovery_error) = match repository.refresh(CancellationToken::new()).await
+    {
+        Ok(snapshot) => (Some(snapshot), None),
+        Err(error) => (None, Some(error)),
+    };
+    match error {
+        SystemConfiguratorError::Cancelled => SwitchOutcome::Cancelled {
             completed,
-            final_snapshot: Some(snapshot),
-            discovery_error: None,
+            final_snapshot,
+            discovery_error,
         },
-        Err(error) => SwitchOutcome::Cancelled {
-            completed,
-            final_snapshot: None,
-            discovery_error: Some(error),
-        },
-    }
-}
-
-async fn failed_after_refresh(
-    failure: SystemConfiguratorFailure,
-    repository: &dyn BackendRepository,
-) -> SwitchOutcome {
-    let (completed, error) = failure.into_parts();
-    let final_discovery = repository.refresh(CancellationToken::new()).await;
-    if error == SystemConfiguratorError::Cancelled {
-        return match final_discovery {
-            Ok(snapshot) => SwitchOutcome::Cancelled {
-                completed,
-                final_snapshot: Some(snapshot),
-                discovery_error: None,
-            },
-            Err(error) => SwitchOutcome::Cancelled {
-                completed,
-                final_snapshot: None,
-                discovery_error: Some(error),
-            },
-        };
-    }
-    match final_discovery {
-        Ok(snapshot) => SwitchOutcome::Failed {
+        error => SwitchOutcome::Failed {
             completed,
             error,
-            final_snapshot: Some(snapshot),
-            discovery_error: None,
-            restore_error: None,
-        },
-        Err(discovery_error) => SwitchOutcome::Failed {
-            completed,
-            error,
-            final_snapshot: None,
-            discovery_error: Some(discovery_error),
+            final_snapshot,
+            discovery_error,
             restore_error: None,
         },
     }

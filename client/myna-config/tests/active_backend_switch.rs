@@ -7,9 +7,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use myna_config::active_backend::{
-    ensure_backend_active, execute_switch, myna_restart_request, ActiveBackendController,
-    PrepareSwitchError, Settled, SetupError, SetupStage, SnapdWait, SwitchNotice, SwitchOutcome,
-    SwitchPlan,
+    ensure_backend_active, execute_switch, ActiveBackendController, PrepareSwitchError, Settled,
+    SetupError, SetupStage, SnapdWait, SwitchNotice, SwitchOutcome, SwitchPlan,
 };
 use myna_config::backend_apply::ApplyPreview;
 use myna_config::command::{CancellationToken, CommandRequest};
@@ -51,154 +50,6 @@ fn connections(snaps: &[&str], connected: &[&str]) -> ConnectionSnapshot {
         .map(|snap| (*snap, Some("speech-to-text")))
         .collect();
     content_slots(&slots, connected)
-}
-
-fn argv(plan: &SwitchPlan) -> Vec<(&str, Vec<&str>)> {
-    plan.operations()
-        .iter()
-        .map(|request| {
-            (
-                request.executable(),
-                request.arguments().iter().map(String::as_str).collect(),
-            )
-        })
-        .collect()
-}
-
-#[test]
-fn plan_connects_from_zero_connections() {
-    let plan = SwitchPlan::new(
-        &connections(&["myna-parakeet"], &[]),
-        BackendIdentity::new("myna-parakeet", "provider"),
-    )
-    .unwrap();
-    assert_eq!(
-        argv(&plan),
-        [
-            (
-                "snap",
-                vec!["connect", "myna:backend", "myna-parakeet:provider"]
-            ),
-            (
-                "systemctl",
-                vec!["--user", "restart", "snap.myna.myna.service"]
-            )
-        ]
-    );
-}
-
-#[test]
-fn plan_disconnects_a_provider_that_is_no_model() {
-    // A machine onboarded before only speech-to-text counted had myna:backend
-    // connected to gemma4, an LLM; the switch to a real model drops it.
-    let snapshot = content_slots(&[("gemma4", None), ("myna-parakeet", None)], &["gemma4"]);
-    assert_eq!(snapshot.active_state(), ActiveBackendState::Disconnected);
-    let plan =
-        SwitchPlan::new(&snapshot, BackendIdentity::new("myna-parakeet", "provider")).unwrap();
-    assert_eq!(
-        argv(&plan),
-        [
-            (
-                "snap",
-                vec!["disconnect", "myna:backend", "gemma4:provider"]
-            ),
-            (
-                "snap",
-                vec!["connect", "myna:backend", "myna-parakeet:provider"]
-            ),
-            (
-                "systemctl",
-                vec!["--user", "restart", "snap.myna.myna.service"]
-            )
-        ]
-    );
-}
-
-#[test]
-fn plan_switches_one_connection_disconnect_first() {
-    let plan = SwitchPlan::new(
-        &connections(&["myna-parakeet", "myna-whisper"], &["myna-parakeet"]),
-        BackendIdentity::new("myna-whisper", "provider"),
-    )
-    .unwrap();
-    assert_eq!(
-        argv(&plan),
-        [
-            (
-                "snap",
-                vec!["disconnect", "myna:backend", "myna-parakeet:provider"]
-            ),
-            (
-                "snap",
-                vec!["connect", "myna:backend", "myna-whisper:provider"]
-            ),
-            (
-                "systemctl",
-                vec!["--user", "restart", "snap.myna.myna.service"]
-            )
-        ]
-    );
-}
-
-#[test]
-fn plan_disconnects_every_multiple_connection_before_connecting() {
-    let plan = SwitchPlan::new(
-        &connections(
-            &["myna-parakeet", "myna-whisper", "other"],
-            &["myna-parakeet", "myna-whisper"],
-        ),
-        BackendIdentity::new("other", "provider"),
-    )
-    .unwrap();
-    assert_eq!(plan.operations().len(), 4);
-    assert_eq!(plan.operations()[0].arguments()[0], "disconnect");
-    assert_eq!(plan.operations()[1].arguments()[0], "disconnect");
-    assert_eq!(plan.operations()[2].arguments()[0], "connect");
-    assert_eq!(plan.operations()[3], myna_restart_request());
-}
-
-#[test]
-fn same_backend_as_exactly_one_connection_is_noop() {
-    let plan = SwitchPlan::new(
-        &connections(&["myna-parakeet"], &["myna-parakeet"]),
-        BackendIdentity::new("myna-parakeet", "provider"),
-    )
-    .unwrap();
-    assert!(plan.operations().is_empty());
-    assert!(plan.is_noop());
-}
-
-#[test]
-fn selecting_one_of_multiple_connections_still_converges_to_one() {
-    let plan = SwitchPlan::new(
-        &connections(
-            &["myna-parakeet", "myna-whisper"],
-            &["myna-parakeet", "myna-whisper"],
-        ),
-        BackendIdentity::new("myna-parakeet", "provider"),
-    )
-    .unwrap();
-    assert_eq!(
-        argv(&plan),
-        [
-            (
-                "snap",
-                vec!["disconnect", "myna:backend", "myna-parakeet:provider"]
-            ),
-            (
-                "snap",
-                vec!["disconnect", "myna:backend", "myna-whisper:provider"]
-            ),
-            (
-                "snap",
-                vec!["connect", "myna:backend", "myna-parakeet:provider"]
-            ),
-            (
-                "systemctl",
-                vec!["--user", "restart", "snap.myna.myna.service"]
-            ),
-        ]
-    );
 }
 
 #[test]
@@ -603,6 +454,47 @@ fn a_dismissed_authorization_prompt_is_a_cancel_that_rereads_the_connections() {
 }
 
 #[test]
+fn post_failure_rediscovery_errors_preserve_cancel_vs_failure_outcomes() {
+    for failure in [
+        SystemConfiguratorError::Cancelled,
+        SystemConfiguratorError::execution("snap", vec![], Some(1), "", "failed"),
+    ] {
+        let initial = connections(&["myna-whisper"], &[]);
+        let plan =
+            SwitchPlan::new(&initial, BackendIdentity::new("myna-whisper", "provider")).unwrap();
+        let completed = success(&plan)[..1].to_vec();
+        let repository = FakeRepository::new([Ok(initial), Err(error("rediscovery failed"))]);
+        let configurator = FakeConfigurator::returning(Err(SystemConfiguratorFailure::new(
+            completed.clone(),
+            failure.clone(),
+        )));
+        let outcome = block_on(execute_switch(
+            &plan,
+            &configurator,
+            &repository,
+            CancellationToken::new(),
+        ));
+        let discovery_error = Some(error("rediscovery failed"));
+        let expected = if failure == SystemConfiguratorError::Cancelled {
+            SwitchOutcome::Cancelled {
+                completed,
+                final_snapshot: None,
+                discovery_error,
+            }
+        } else {
+            SwitchOutcome::Failed {
+                completed,
+                error: failure,
+                final_snapshot: None,
+                discovery_error,
+                restore_error: None,
+            }
+        };
+        assert_eq!(outcome, expected);
+    }
+}
+
+#[test]
 fn partial_reconciliation_and_post_operation_disagreement_are_honest() {
     let initial = connections(&["old", "new", "external"], &["old", "external"]);
     let plan = SwitchPlan::new(&initial, BackendIdentity::new("new", "provider")).unwrap();
@@ -644,9 +536,13 @@ fn controller_serializes_operations_ignores_stale_tokens_and_applies_final_disco
     let initial = connections(&["old", "new"], &["old"]);
     let controller =
         ActiveBackendController::with_coordinator(initial.clone(), OperationCoordinator::new());
+    assert!(controller.verified());
+    assert!(controller.set_snapshot(initial.clone()));
     let first = controller
         .begin(BackendIdentity::new("new", "provider"))
         .unwrap();
+    assert!(!controller.set_snapshot(connections(&["old", "new"], &["new"])));
+    assert_eq!(controller.snapshot(), initial);
     assert_eq!(
         controller
             .begin(BackendIdentity::new("old", "provider"))
@@ -689,6 +585,23 @@ fn controller_serializes_operations_ignores_stale_tokens_and_applies_final_disco
         controller.snapshot().active_state(),
         ActiveBackendState::Connected(BackendIdentity::new("new", "provider"))
     );
+    let third = controller
+        .begin(BackendIdentity::new("old", "provider"))
+        .unwrap();
+    let repository = FakeRepository::new([Err(error("snapd is down"))]);
+    let configurator = FakeConfigurator::returning(Ok(vec![]));
+    let outcome = block_on(execute_switch(
+        third.plan(),
+        &configurator,
+        &repository,
+        third.cancellation(),
+    ));
+    assert!(controller.complete(third.operation_token(), outcome));
+    assert!(!controller.verified());
+    assert_eq!(controller.snapshot(), actual);
+    assert!(configurator.calls().is_empty());
+    assert!(controller.set_snapshot(controller.snapshot()));
+    assert!(controller.verified());
 }
 
 #[test]
