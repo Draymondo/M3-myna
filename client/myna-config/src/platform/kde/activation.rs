@@ -111,7 +111,11 @@ impl KglobalaccelActivation {
 
     /// The first key of each sequence `action` holds.
     fn keys(&self, component: &str, action: &str) -> Result<Vec<i32>, ActivationError> {
-        let reply = self.call("shortcutKeys", action_id(component, action, ""), "(a(ai))")?;
+        let reply = self.call(
+            "shortcutKeys",
+            (action_id(component, action),).to_variant(),
+            "(a(ai))",
+        )?;
         Ok(reply
             .child_value(0)
             .iter()
@@ -128,14 +132,8 @@ impl KglobalaccelActivation {
     }
 
     fn set_keys(&self, component: &str, action: &str, keys: &[i32]) -> Result<(), ActivationError> {
-        let sequences: Vec<Variant> = keys
-            .iter()
-            .map(|key| Variant::tuple_from_iter([[*key, 0, 0, 0].to_variant()]))
-            .collect();
-        let parameters = Variant::tuple_from_iter([
-            action_id(component, action, "").child_value(0),
-            Variant::array_from_iter_with_type(glib::VariantTy::new("(ai)").unwrap(), sequences),
-        ]);
+        let sequences: Vec<_> = keys.iter().map(|key| sequence(*key)).collect();
+        let parameters = (action_id(component, action), sequences).to_variant();
         self.call("setForeignShortcutKeys", parameters, "()")
             .map(drop)
     }
@@ -173,9 +171,7 @@ impl KglobalaccelActivation {
             .and_then(|()| std::fs::write(dir.join(component), file.to_data().as_bytes()))
             .map_err(|error| ActivationError::Refused(format!("{}: {error}", dir.display())))
     }
-}
 
-impl KglobalaccelActivation {
     /// Give `component` a grabbed `_launch`. Registering `_launch` directly
     /// would shadow the one the entry gives a new component, and only that
     /// one is grabbed: Plasma's Shortcuts settings register a placeholder and
@@ -187,7 +183,7 @@ impl KglobalaccelActivation {
         loop {
             self.call(
                 "doRegister",
-                Variant::tuple_from_iter([[component, "", name, ""].to_variant()]),
+                (vec![component, "", name, ""],).to_variant(),
                 "()",
             )?;
             if self.has_component(component)? {
@@ -278,30 +274,18 @@ impl Activation for KglobalaccelActivation {
         let Some(key) = keys::to_qt(accelerator) else {
             return Ok(Vec::new());
         };
-        let parameters = Variant::tuple_from_iter([
-            Variant::tuple_from_iter([[key, 0, 0, 0].to_variant()]),
-            Variant::tuple_from_iter([0_i32.to_variant()]),
-        ]);
+        let parameters = (sequence(key), (0_i32,)).to_variant();
         let reply = self.call("globalShortcutsByKey", parameters, "(a(ssssssaiai))")?;
-        let mut found = Vec::new();
-        for info in reply.child_value(0).iter() {
+        let conflicts = reply.child_value(0).iter().filter_map(|info| {
             let field = |i| info.child_value(i).str().unwrap_or_default().to_owned();
-            let (action, action_name, component, component_name) =
-                (field(0), field(1), field(2), field(3));
-            if self.is_ours(&component) {
-                continue;
-            }
-            found.push(Conflict {
-                action: if action == LAUNCH {
-                    component_name
-                } else {
-                    action_name
-                },
+            let (action, component) = (field(0), field(2));
+            (!self.is_ours(&component)).then(|| Conflict {
+                action: field(if action == LAUNCH { 3 } else { 1 }),
                 reserved: false,
                 holder: format!("{component}\t{action}\t{key}"),
-            });
-        }
-        Ok(found)
+            })
+        });
+        Ok(conflicts.collect())
     }
 
     fn release(&self, conflict: &Conflict) -> Result<(), ActivationError> {
@@ -361,8 +345,13 @@ impl Activation for KglobalaccelActivation {
 }
 
 /// kglobalaccel's four-part action id: component, action, and their names.
-fn action_id(component: &str, action: &str, name: &str) -> Variant {
-    Variant::tuple_from_iter([[component, action, name, name].to_variant()])
+fn action_id<'a>(component: &'a str, action: &'a str) -> Vec<&'a str> {
+    vec![component, action, "", ""]
+}
+
+/// `key` as a four-int key sequence.
+fn sequence(key: i32) -> (Vec<i32>,) {
+    (vec![key, 0, 0, 0],)
 }
 
 /// The desktop file ID of the entry that runs `command`: one per command, so
