@@ -962,6 +962,22 @@ impl EngineState {
         retired
     }
 
+    /// Another engine is global while lease `id` writes: on GNOME, the Shell
+    /// re-applying its input source after IBus restarts, or the user picking
+    /// another. The daemon tells our engine no more than a focus blip would,
+    /// so this is found by asking it. The lease ends, and so does the restore
+    /// the connection owed, which would undo that choice.
+    fn taken(&self, id: u64) {
+        self.lease.send_if_modified(|lease| {
+            let held = lease.held_by(id);
+            if held {
+                lease.binding = Binding::Lost;
+            }
+            held
+        });
+        self.displaced.send_replace(None);
+    }
+
     /// Record the engine an activation displaces, `current` being what
     /// `GetGlobalEngine` named just before the switch. Ours means an earlier
     /// activation is still standing: what it displaced is what the user is
@@ -1243,6 +1259,23 @@ async fn call(
     .map_err(|e| classify(member, e))
 }
 
+/// The global engine's name, `None` where the daemon names none, which it
+/// answers with an error. Only a lost connection is an error here.
+async fn global_engine_of(conn: &Connection) -> Result<Option<String>, InjectError> {
+    let msg = match call(conn, "GetGlobalEngine", &()).await {
+        Ok(msg) => msg,
+        Err(InjectError::Backend(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let Ok(Value::Structure(desc)) = msg.body().deserialize::<OwnedValue>().map(Value::from) else {
+        return Ok(None);
+    };
+    Ok(match desc.fields().get(2) {
+        Some(Value::Str(name)) => Some(name.to_string()),
+        _ => None,
+    })
+}
+
 /// IBus engine-over-`zbus` injector (the shipped backend).
 pub struct IbusInjector {
     conn: Connection,
@@ -1283,14 +1316,7 @@ impl IbusInjector {
 
     /// Read the currently active global engine's name (to restore later).
     async fn global_engine_name(&self) -> Option<String> {
-        let msg = call(&self.conn, "GetGlobalEngine", &()).await.ok()?;
-        let v: OwnedValue = msg.body().deserialize().ok()?;
-        if let Value::Structure(s) = Value::from(v) {
-            if let Some(Value::Str(name)) = s.fields().get(2) {
-                return Some(name.to_string());
-            }
-        }
-        None
+        global_engine_of(&self.conn).await.ok().flatten()
     }
 
     /// The active global engine's name (read-only; for tests/diagnostics).
@@ -1339,6 +1365,21 @@ impl Injector for IbusInjector {
         let focus_received = self.state.focus_arrived(lease).await;
         if focus_received {
             tokio::time::sleep(CONTENT_TYPE_GRACE).await;
+        }
+
+        // The switch answering is no proof it stuck: an engine made global
+        // just after it, by the Shell or the user, wins without failing it.
+        match global_engine_of(&self.conn).await {
+            Ok(Some(name)) if name == ENGINE_NAME => {}
+            Ok(now) => {
+                myna_core::dbg_log!("inject", "acquire refused: the global engine is {now:?}");
+                target.release().await;
+                return Err(InjectError::FocusLost);
+            }
+            Err(err) => {
+                target.release().await;
+                return Err(err);
+            }
         }
 
         if self.state.on_fake(lease) {
@@ -1420,6 +1461,24 @@ impl IbusTarget {
 }
 
 impl IbusTarget {
+    /// Whether another engine took the global one from us, which ends the
+    /// lease. An engine the daemon cannot name is taken as still ours.
+    async fn taken(&mut self) -> Result<bool, InjectError> {
+        match global_engine_of(&self.conn).await? {
+            Some(name) if name != ENGINE_NAME => {
+                myna_core::dbg_log!(
+                    "inject",
+                    "IBus global engine is now {name:?}: ours was taken"
+                );
+                self.state.taken(self.lease);
+                self.held.clear();
+                self.held_preedit = None;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// Where this target stands for a write, holding `text` while that is
     /// unsure. Emitted while focus is away, it would reach the fake context.
     async fn standing(&mut self, held: Option<&str>, preedit: bool) -> Standing {
@@ -1526,6 +1585,11 @@ impl IbusTarget {
 #[async_trait]
 impl Target for IbusTarget {
     async fn commit(&mut self, text: &str) -> Result<(), InjectError> {
+        // Before anything is held: held text would otherwise wait out a focus
+        // blip that never ends.
+        if self.taken().await? {
+            return Err(InjectError::FocusLost);
+        }
         match self.standing(Some(text), false).await {
             Standing::Unsure => return Ok(()),
             Standing::Lost => {
@@ -1563,6 +1627,8 @@ impl Target for IbusTarget {
     /// Clears the preedit and restores the input method the engine switch
     /// displaced, unless a newer lease superseded this one.
     async fn release(mut self: Box<Self>) {
+        // An engine taken is owed nothing, neither held text nor a restore.
+        let _ = self.taken().await;
         // A blip under way decides whether what it held lands.
         if self.state.standing(self.lease, true).await == Standing::Held {
             let _ = self.flush().await;
@@ -2215,6 +2281,36 @@ mod tests {
         state.displace(Some(USER_ENGINE.into()));
         assert_eq!(state.reclaim(Retired::Superseded), None);
         assert_eq!(state.reclaim(Retired::Held).as_deref(), Some(USER_ENGINE));
+    }
+
+    /// Another engine found global ends the lease at once, reports the loss,
+    /// and leaves no restore to undo the user's choice with.
+    #[tokio::test]
+    async fn an_engine_taken_ends_the_lease_and_its_restore() {
+        let state = engine_state();
+        let lease = state.mint();
+        state.displace(Some(USER_ENGINE.into()));
+        let mut loss = state.loss(lease);
+        state.taken(lease);
+        assert!(!state.holds(lease));
+        assert_eq!(loss.next().now_or_never(), Some(Some(FocusEvent::FocusOut)));
+        assert_eq!(state.reclaim(state.retire(lease)), None);
+    }
+
+    /// Found by a superseded target, it still cancels the restore: the
+    /// engine is no longer the live target's either.
+    #[test]
+    fn an_engine_taken_from_a_superseded_lease_cancels_the_restore() {
+        let state = engine_state();
+        let old = state.mint();
+        state.displace(Some(USER_ENGINE.into()));
+        let live = state.mint();
+        state.taken(old);
+        assert!(
+            state.holds(live),
+            "the live lease learns of it at its own check"
+        );
+        assert_eq!(state.reclaim(state.retire(live)), None);
     }
 
     const APP: &str = "gtk4-im:mousepad";

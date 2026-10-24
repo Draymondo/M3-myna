@@ -51,6 +51,9 @@ const CAP_SURROUNDING_TEXT: u32 = 1 << 5;
 /// Served by ibus-engine-simple, which the headless daemon can spawn.
 const PRIOR_ENGINE: &str = "xkb:us::eng";
 
+/// Another input source, as the user picks one.
+const PICKED_ENGINE: &str = "xkb:fr::fra";
+
 /// The engine `IbusInjector` registers.
 const MYNA_ENGINE: &str = "myna-stt";
 
@@ -299,6 +302,14 @@ impl Field {
     }
 
     async fn next(&mut self) -> Seen {
+        self.next_within(HANG_GUARD)
+            .await
+            .unwrap_or_else(|| panic!("nothing delivered to {} within {HANG_GUARD:?}", self.ic))
+    }
+
+    /// What the daemon delivers to this field next, if anything does within
+    /// `wait`.
+    async fn next_within(&mut self, wait: Duration) -> Option<Seen> {
         let ic = self.ic.clone();
         let stream = &mut self.stream;
         let seen = async move {
@@ -333,9 +344,7 @@ impl Field {
             }
             panic!("IBus closed the field's connection");
         };
-        tokio::time::timeout(HANG_GUARD, seen)
-            .await
-            .unwrap_or_else(|_| panic!("nothing delivered to {} within {HANG_GUARD:?}", self.ic))
+        tokio::time::timeout(wait, seen).await.ok()
     }
 
     /// Prove nothing reached the field since the last `next`: the sentinel
@@ -1388,4 +1397,101 @@ async fn the_first_acquire_on_a_fresh_daemon_is_answered() {
         field.close().await;
     }
     assert_eq!(hung, 0, "first acquires on a fresh daemon that hung");
+}
+
+/// Make `engine` global from a connection of the field's own, as GNOME Shell
+/// does when it re-applies the user's input source after IBus restarts, or
+/// when the user picks another source.
+async fn shell_sets_global_engine(conn: &Connection, engine: &str) -> zbus::Result<()> {
+    conn.call_method(
+        Some(IBUS_SERVICE),
+        IBUS_PATH,
+        Some(IBUS_SERVICE),
+        "SetGlobalEngine",
+        &(engine,),
+    )
+    .await
+    .map(drop)
+}
+
+/// The Shell re-applying the input source just after the first press on a
+/// fresh daemon. Whichever switch wins, a dictation that acquires and commits
+/// without an error has its text in the field: an engine taken away is a
+/// visible failure, never a commit into nowhere.
+#[tokio::test]
+async fn an_engine_taken_while_acquiring_is_never_a_silent_success() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let mut silent = Vec::new();
+    for trial in 0..40u64 {
+        let daemon = FreshDaemon::start().await;
+        let mut field = Field::open_at(&daemon.address, "myna-ibus-hw", 0, 0).await;
+        let address = daemon.address.as_str().try_into().expect("address");
+        let mut injector = IbusInjector::connect_to(address)
+            .await
+            .expect("connect to the fresh daemon");
+        let shell = async {
+            tokio::time::sleep(Duration::from_millis(trial)).await;
+            let _ = shell_sets_global_engine(&field.conn, PRIOR_ENGINE).await;
+        };
+        let (acquired, ()) = tokio::join!(
+            async { tokio::time::timeout(HANG_GUARD, injector.acquire()).await },
+            shell
+        );
+        let Ok(Ok(mut target)) = acquired else {
+            eprintln!("trial {trial}: acquire {acquired:?}");
+            field.close().await;
+            continue;
+        };
+        let committed = target.commit("lost?").await;
+        let seen = field.next_within(NOTICE).await;
+        eprintln!("trial {trial}: commit {committed:?}, field saw {seen:?}");
+        if committed.is_ok() && seen.is_none() {
+            silent.push(trial);
+        }
+        target.release().await;
+        field.close().await;
+    }
+    assert!(
+        silent.is_empty(),
+        "commits that reported Ok and reached nothing, by shell delay in ms: {silent:?}"
+    );
+}
+
+/// The user picks another input source mid-dictation. The next commit ends
+/// the dictation instead of being held as through a focus blip, and the
+/// release leaves the user's choice alone rather than switching back to the
+/// engine the dictation displaced.
+#[tokio::test]
+async fn an_input_source_picked_mid_dictation_ends_it_and_is_kept() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let (mut field, mut injector) = session(0, 0).await;
+    let mut target = injector.acquire().await.expect("acquire an ordinary field");
+    let mut events = target.focus_events();
+    target
+        .commit("before")
+        .await
+        .expect("commit before the switch");
+    assert_eq!(field.next().await, Seen::Commit("before".into()));
+
+    shell_sets_global_engine(&field.conn, PICKED_ENGINE)
+        .await
+        .expect("the user's switch");
+    assert!(
+        matches!(target.commit("after").await, Err(InjectError::FocusLost)),
+        "a commit after the switch is refused, not held through a blip"
+    );
+    assert_eq!(
+        events.next().now_or_never(),
+        Some(Some(FocusEvent::FocusOut)),
+        "the refusal ends the dictation"
+    );
+    target.release().await;
+    assert_eq!(
+        global_engine().await.as_deref(),
+        Some(PICKED_ENGINE),
+        "the release switched the user's input source back"
+    );
+    field.close().await;
 }
