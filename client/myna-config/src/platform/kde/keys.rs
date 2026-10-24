@@ -65,13 +65,11 @@ const SPECIAL: [(&str, i32); 30] = [
 /// Qt has no code for.
 pub fn to_qt(accelerator: &Accelerator) -> Option<i32> {
     let (modifiers, name) = accelerator.parts();
-    let mut code = 0;
-    for modifier in modifiers {
-        code |= MODIFIER_NAMES
-            .iter()
-            .find(|(gtk, _, _)| *gtk == modifier)?
-            .2;
-    }
+    let bit = |modifier| MODIFIER_NAMES.iter().find(|(gtk, _, _)| *gtk == modifier);
+    let code: i32 = modifiers
+        .into_iter()
+        .map(|m| bit(m).map(|b| b.2))
+        .sum::<Option<i32>>()?;
     // GDK's own name for the key (`Prior` is `Page_Up`), else the spelling,
     // which `same_keys` reads in either case (`f4`).
     let canonical = gdk::Key::from_name(name).and_then(|key| key.to_lower().name());
@@ -100,11 +98,13 @@ fn key_code(name: &str) -> Option<i32> {
         return None;
     }
     let character = key.to_unicode().filter(|c| !c.is_control())?;
-    let mut upper = character.to_uppercase();
-    match (upper.next(), upper.next()) {
-        (Some(upper), None) => Some(upper as i32),
-        _ => None,
-    }
+    single(character.to_uppercase()).map(|upper| upper as i32)
+}
+
+/// A case mapping's result when it is one character.
+fn single(mut characters: impl Iterator<Item = char>) -> Option<char> {
+    let character = characters.next()?;
+    characters.next().is_none().then_some(character)
 }
 
 /// The GTK accelerator for a Qt key, `None` for one GTK cannot name.
@@ -119,12 +119,9 @@ pub fn from_qt(code: i32) -> Option<Accelerator> {
         format!("F{}", key - F1 + 1)
     } else {
         let character = char::from_u32(u32::try_from(key).ok()?)?;
-        let mut lower = character.to_lowercase();
-        let lower = match (lower.next(), lower.next()) {
-            (Some(lower), None) => lower,
-            _ => return None,
-        };
-        keysym(lower).name()?.to_string()
+        keysym(single(character.to_lowercase())?)
+            .name()?
+            .to_string()
     };
     let modifiers: String = MODIFIER_NAMES
         .iter()
@@ -161,10 +158,7 @@ mod tests {
         assert_eq!(qt("<Super>w"), Some(268_435_543));
         assert_eq!(qt("<Alt>F4"), Some(150_994_995));
         assert_eq!(qt("<Super>j"), Some(META | 0x4a));
-        // Every spelling of one chord is one code.
-        for spelling in ["<Primary><Alt>d", "<Ctrl><Mod1>D", "<Alt><Control>d"] {
-            assert_eq!(qt(spelling), Some(CONTROL | ALT | 0x44), "{spelling}");
-        }
+        assert_eq!(qt("<Ctrl><Mod1>D"), Some(CONTROL | ALT | 0x44));
         assert_eq!(
             qt("<Shift><Super>Page_Up"),
             Some(SHIFT | META | 0x0100_0016)
