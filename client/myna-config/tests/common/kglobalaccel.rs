@@ -12,7 +12,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use gio::glib::{Variant, VariantTy};
+use gio::glib::Variant;
 use gio::prelude::*;
 
 const XML: &str = "<node>\
@@ -42,6 +42,7 @@ const XML: &str = "<node>\
   </interface>\
 </node>";
 const INTERFACE: &str = "org.kde.KGlobalAccel";
+const ABORT: &str = "org.example.Abort";
 
 #[derive(Clone, Debug, Default)]
 pub struct Action {
@@ -68,32 +69,23 @@ pub struct State {
 }
 
 impl State {
+    fn component(&mut self, name: &str) -> Option<&mut Component> {
+        self.components.iter_mut().find(|c| c.name == name)
+    }
+
     pub fn action(&self, component: &str, action: &str) -> Option<&Action> {
-        self.components
-            .iter()
-            .find(|c| c.name == component)?
-            .actions
-            .iter()
-            .find(|a| a.name == action)
+        let component = self.components.iter().find(|c| c.name == component)?;
+        component.actions.iter().find(|a| a.name == action)
     }
 
     fn action_mut(&mut self, component: &str, action: &str) -> Option<&mut Action> {
-        self.components
-            .iter_mut()
-            .find(|c| c.name == component)?
-            .actions
-            .iter_mut()
-            .find(|a| a.name == action)
+        let component = self.component(component)?;
+        component.actions.iter_mut().find(|a| a.name == action)
     }
 
-    fn holder(&self, key: i32) -> Option<(&Component, &Action)> {
-        self.components.iter().find_map(|component| {
-            component
-                .actions
-                .iter()
-                .find(|action| action.keys.contains(&key))
-                .map(|action| (component, action))
-        })
+    fn holder(&self, key: i32) -> Option<&Action> {
+        let mut actions = self.components.iter().flat_map(|c| &c.actions);
+        actions.find(|action| action.keys.contains(&key))
     }
 
     fn register(&mut self, id: &[String]) {
@@ -103,63 +95,52 @@ impl State {
         if self.action(component, action).is_some() {
             return;
         }
-        if !self.components.iter().any(|c| &c.name == component) {
-            if component.ends_with(".desktop") && self.unseen > 0 {
+        if self.component(component).is_none() {
+            let entry = component.ends_with(".desktop");
+            if entry && self.unseen > 0 {
                 self.unseen -= 1;
                 return;
             }
-            let mut new = Component {
+            let launch = entry.then(|| Action {
+                name: "_launch".into(),
+                friendly: component_friendly.clone(),
+                keys: Vec::new(),
+                present: true,
+            });
+            self.components.push(Component {
                 name: component.clone(),
                 friendly: component_friendly.clone(),
-                actions: Vec::new(),
-            };
-            if component.ends_with(".desktop") {
-                new.actions.push(Action {
-                    name: "_launch".into(),
-                    friendly: component_friendly.clone(),
-                    keys: Vec::new(),
-                    present: true,
-                });
-            }
-            self.components.push(new);
+                actions: launch.into_iter().collect(),
+            });
         }
-        let actions = &mut self
-            .components
-            .iter_mut()
-            .find(|c| &c.name == component)
-            .unwrap()
-            .actions;
+        let actions = &mut self.component(component).unwrap().actions;
+        // Registering `_launch` itself shadows the grabbed one.
         actions.retain(|a| &a.name != action);
         actions.push(Action {
             name: action.clone(),
             friendly: action_friendly.clone(),
-            keys: Vec::new(),
-            present: false,
+            ..Action::default()
         });
     }
 }
 
-fn sequences(keys: &[i32]) -> Variant {
-    Variant::array_from_iter_with_type(
-        VariantTy::new("(ai)").unwrap(),
-        keys.iter()
-            .map(|key| Variant::tuple_from_iter([[*key, 0, 0, 0].to_variant()])),
-    )
+/// Each key as the four-int sequence kglobalaccel stores.
+pub fn sequences(keys: &[i32]) -> Variant {
+    let sequences: Vec<(Vec<i32>,)> = keys.iter().map(|key| (vec![*key, 0, 0, 0],)).collect();
+    sequences.to_variant()
 }
 
-/// The first int of each sequence, or why KWin would abort.
-fn keys_of(value: &Variant) -> Result<Vec<i32>, String> {
-    value
-        .iter()
-        .map(|sequence| {
-            let ints = sequence.child_value(0).get::<Vec<i32>>().unwrap();
-            match ints.as_slice() {
-                [key, 0, 0, 0] => Ok(*key),
-                _ => Err(format!("KWin aborts on the key sequence {ints:?}")),
-            }
-        })
-        .filter(|key| key != &Ok(0))
-        .collect()
+/// The key of a sequence, or why KWin would abort.
+fn key_of(sequence: &Variant) -> Result<i32, String> {
+    match sequence
+        .child_value(0)
+        .get::<Vec<i32>>()
+        .unwrap()
+        .as_slice()
+    {
+        [key, 0, 0, 0] => Ok(*key),
+        ints => Err(format!("KWin aborts on the key sequence {ints:?}")),
+    }
 }
 
 /// Serve kglobalaccel on the bus at `address` until it goes.
@@ -177,17 +158,10 @@ pub fn serve(address: &str, ready: std::sync::mpsc::Sender<()>, state: Arc<Mutex
                 let id = || parameters.child_value(0).get::<Vec<String>>().unwrap();
                 match method {
                     "allMainComponents" => {
-                        let names: Vec<Vec<String>> = state
+                        let names: Vec<Vec<&str>> = state
                             .components
                             .iter()
-                            .map(|c| {
-                                vec![
-                                    c.name.clone(),
-                                    c.friendly.clone(),
-                                    String::new(),
-                                    String::new(),
-                                ]
-                            })
+                            .map(|c| vec![c.name.as_str(), c.friendly.as_str(), "", ""])
                             .collect();
                         invocation.return_value(Some(&(names,).to_variant()));
                     }
@@ -197,121 +171,92 @@ pub fn serve(address: &str, ready: std::sync::mpsc::Sender<()>, state: Arc<Mutex
                     }
                     "getComponent" => {
                         let (name,) = parameters.get::<(String,)>().unwrap();
-                        if state.components.iter().any(|c| c.name == name) {
-                            let path = format!("/component/{}", name.replace(['.', '-', ' '], "_"));
-                            let path = gio::glib::variant::ObjectPath::try_from(path).unwrap();
-                            invocation.return_value(Some(&(path,).to_variant()));
-                        } else {
-                            invocation.return_dbus_error(
+                        if state.component(&name).is_none() {
+                            return invocation.return_dbus_error(
                                 "org.kde.kglobalaccel.NoSuchComponent",
                                 &format!("The component '{name}' doesn't exist."),
                             );
                         }
+                        let path = format!("/component/{}", name.replace(['.', '-', ' '], "_"));
+                        let path = gio::glib::variant::ObjectPath::try_from(path).unwrap();
+                        invocation.return_value(Some(&(path,).to_variant()));
                     }
                     "unregister" => {
                         let (component, action) = parameters.get::<(String, String)>().unwrap();
-                        let found = state
-                            .components
-                            .iter_mut()
-                            .find(|c| c.name == component)
-                            .is_some_and(|c| {
-                                let before = c.actions.len();
-                                c.actions.retain(|a| a.name != action);
-                                c.actions.len() != before
-                            });
+                        let found = state.component(&component).is_some_and(|c| {
+                            let before = c.actions.len();
+                            c.actions.retain(|a| a.name != action);
+                            c.actions.len() != before
+                        });
                         invocation.return_value(Some(&(found,).to_variant()));
                     }
                     "shortcutKeys" => {
                         let id = id();
-                        let keys = state
-                            .action(&id[0], &id[1])
-                            .map(|a| a.keys.clone())
-                            .unwrap_or_default();
-                        invocation
-                            .return_value(Some(&Variant::tuple_from_iter([sequences(&keys)])));
+                        let keys = state.action(&id[0], &id[1]).map(|a| a.keys.clone());
+                        let keys = sequences(&keys.unwrap_or_default());
+                        invocation.return_value(Some(&Variant::tuple_from_iter([keys])));
                     }
                     "setForeignShortcutKeys" => {
                         let id = id();
-                        let wanted = match keys_of(&parameters.child_value(1)) {
+                        let wanted: Result<Vec<i32>, String> = parameters
+                            .child_value(1)
+                            .iter()
+                            .map(|s| key_of(&s))
+                            .collect();
+                        let wanted = match wanted {
                             Ok(keys) => keys,
-                            Err(abort) => {
-                                return invocation.return_dbus_error("org.example.Abort", &abort)
-                            }
+                            Err(why) => return invocation.return_dbus_error(ABORT, &why),
                         };
-                        if state.action(&id[0], &id[1]).is_none() {
+                        let Some(action) = state.action_mut(&id[0], &id[1]) else {
                             return invocation.return_value(None);
-                        }
-                        if let Some(action) = state.action_mut(&id[0], &id[1]) {
-                            action.keys.clear();
-                        }
+                        };
+                        action.keys.clear();
                         let free: Vec<i32> = wanted
                             .into_iter()
-                            .filter(|key| state.holder(*key).is_none())
+                            .filter(|key| *key != 0 && state.holder(*key).is_none())
                             .collect();
                         state.action_mut(&id[0], &id[1]).unwrap().keys = free.clone();
                         drop(state);
+                        let changed = Variant::tuple_from_iter([id.to_variant(), sequences(&free)]);
                         emitter
                             .emit_signal(
                                 None,
                                 "/kglobalaccel",
                                 INTERFACE,
                                 "yourShortcutsChanged",
-                                Some(&Variant::tuple_from_iter([
-                                    id.to_variant(),
-                                    sequences(&free),
-                                ])),
+                                Some(&changed),
                             )
                             .unwrap();
                         invocation.return_value(None);
                     }
                     "globalShortcutsByKey" => {
-                        let key = match keys_of(&Variant::array_from_iter_with_type(
-                            VariantTy::new("(ai)").unwrap(),
-                            [parameters.child_value(0)],
-                        )) {
-                            Ok(keys) => keys.first().copied().unwrap_or(0),
-                            Err(abort) => {
-                                return invocation.return_dbus_error("org.example.Abort", &abort)
-                            }
+                        let key = match key_of(&parameters.child_value(0)) {
+                            Ok(key) => key,
+                            Err(why) => return invocation.return_dbus_error(ABORT, &why),
                         };
                         // Like kglobalaccel, the first component with a match.
-                        let found: Vec<Variant> = state
+                        let found = state
                             .components
                             .iter()
                             .map(|c| {
-                                (
-                                    c,
-                                    c.actions
-                                        .iter()
-                                        .filter(|a| a.keys.contains(&key))
-                                        .collect::<Vec<_>>(),
-                                )
+                                let held = c.actions.iter().filter(|a| a.keys.contains(&key));
+                                held.map(|a| {
+                                    (
+                                        a.name.clone(),
+                                        a.friendly.clone(),
+                                        c.name.clone(),
+                                        c.friendly.clone(),
+                                        "default",
+                                        "Default Context",
+                                        a.keys.clone(),
+                                        Vec::<i32>::new(),
+                                    )
+                                })
+                                .collect::<Vec<_>>()
                             })
-                            .find(|(_, actions)| !actions.is_empty())
-                            .map(|(c, actions)| {
-                                actions
-                                    .into_iter()
-                                    .map(|a| {
-                                        (
-                                            a.name.as_str(),
-                                            a.friendly.as_str(),
-                                            c.name.as_str(),
-                                            c.friendly.as_str(),
-                                            "default",
-                                            "Default Context",
-                                            a.keys.clone(),
-                                            Vec::<i32>::new(),
-                                        )
-                                            .to_variant()
-                                    })
-                                    .collect()
-                            })
+                            .find(|held| !held.is_empty())
                             .unwrap_or_default();
-                        let array = Variant::array_from_iter_with_type(
-                            VariantTy::new("(ssssssaiai)").unwrap(),
-                            found,
-                        );
-                        invocation.return_value(Some(&Variant::tuple_from_iter([array])));
+                        invocation.return_value(Some(&(found,).to_variant()));
                     }
                     other => unreachable!("{other}"),
                 }
