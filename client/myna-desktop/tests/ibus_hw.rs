@@ -143,6 +143,40 @@ enum Seen {
     HidePreedit,
 }
 
+/// The header fields a case reads, from the message's own bytes. Not
+/// `Message::header`: ibus before 1.5.31 (noble ships 1.5.29) sends its
+/// broadcasts from `org.freedesktop.IBus`, a SENDER that is no unique name,
+/// and zbus 5.18 panics rebuilding a header that carries one.
+struct Head {
+    kind: zbus::message::Type,
+    path: Option<String>,
+    member: Option<String>,
+    reply_serial: Option<u32>,
+}
+
+impl Head {
+    fn of(msg: &zbus::Message) -> Self {
+        type Raw = (u8, u8, u8, u8, u32, u32, Vec<(u8, OwnedValue)>);
+        let ((.., fields), _): (Raw, usize) =
+            msg.data().deserialize().expect("a D-Bus message header");
+        let mut head = Self {
+            kind: msg.message_type(),
+            path: None,
+            member: None,
+            reply_serial: None,
+        };
+        for (code, value) in fields {
+            match (code, &*value) {
+                (1, Value::ObjectPath(path)) => head.path = Some(path.to_string()),
+                (3, Value::Str(member)) => head.member = Some(member.to_string()),
+                (5, Value::U32(serial)) => head.reply_serial = Some(*serial),
+                _ => {}
+            }
+        }
+        head
+    }
+}
+
 /// A focused IBus input context, as a text field in an application holds one.
 struct Field {
     conn: Connection,
@@ -259,9 +293,9 @@ impl Field {
         let changed = async move {
             while let Some(msg) = stream.next().await {
                 let msg = msg.expect("message from IBus");
-                let header = msg.header();
-                if header.message_type() == zbus::message::Type::Signal
-                    && header.member().map(|m| m.as_str()) == Some("GlobalEngineChanged")
+                let head = Head::of(&msg);
+                if head.kind == zbus::message::Type::Signal
+                    && head.member.as_deref() == Some("GlobalEngineChanged")
                     && msg.body().deserialize::<String>().ok().as_deref() == Some(engine)
                 {
                     return;
@@ -286,10 +320,10 @@ impl Field {
         let seen = async move {
             while let Some(msg) = stream.next().await {
                 let msg = msg.expect("message from IBus");
-                let header = msg.header();
-                if header.message_type() == zbus::message::Type::Signal
-                    && header.path().map(|p| p.as_str()) == Some(ic.as_str())
-                    && header.member().map(|m| m.as_str()) == Some(member)
+                let head = Head::of(&msg);
+                if head.kind == zbus::message::Type::Signal
+                    && head.path.as_deref() == Some(ic.as_str())
+                    && head.member.as_deref() == Some(member)
                 {
                     return;
                 }
@@ -315,14 +349,14 @@ impl Field {
         let seen = async move {
             while let Some(msg) = stream.next().await {
                 let msg = msg.expect("message from IBus");
-                let header = msg.header();
-                if header.message_type() != zbus::message::Type::Signal
-                    || header.path().map(|p| p.as_str()) != Some(ic.as_str())
+                let head = Head::of(&msg);
+                if head.kind != zbus::message::Type::Signal
+                    || head.path.as_deref() != Some(ic.as_str())
                 {
                     continue;
                 }
                 let body = msg.body();
-                match header.member().map(|m| m.as_str()) {
+                match head.member.as_deref() {
                     Some("CommitText") => {
                         let text: OwnedValue = body.deserialize().expect("CommitText (v)");
                         return Seen::Commit(ibus_text(text));
@@ -392,14 +426,14 @@ const RELEASE_MASK: u32 = 1 << 30;
 impl Field {
     /// Apply one message the daemon sent this field to `shown`.
     fn apply(&self, msg: &zbus::Message, shown: &mut Shown) {
-        let header = msg.header();
-        if header.message_type() != zbus::message::Type::Signal
-            || header.path().map(|p| p.as_str()) != Some(self.ic.as_str())
+        let head = Head::of(msg);
+        if head.kind != zbus::message::Type::Signal
+            || head.path.as_deref() != Some(self.ic.as_str())
         {
             return;
         }
         let body = msg.body();
-        match header.member().map(|m| m.as_str()) {
+        match head.member.as_deref() {
             Some("CommitText") => {
                 let text: OwnedValue = body.deserialize().expect("CommitText (v)");
                 shown.text.push_str(&ibus_text(text));
@@ -431,10 +465,10 @@ impl Field {
             )
             .await
             .expect("ProcessKeyEvent");
-        let call = reply.header().reply_serial();
+        let call = Head::of(&reply).reply_serial;
         let ours = |msg: &zbus::Message| {
-            msg.header().message_type() == zbus::message::Type::MethodReturn
-                && msg.header().reply_serial() == call
+            let head = Head::of(msg);
+            head.kind == zbus::message::Type::MethodReturn && head.reply_serial == call
         };
         loop {
             let msg = tokio::time::timeout(HANG_GUARD, self.stream.next())
