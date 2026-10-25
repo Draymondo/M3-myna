@@ -1500,6 +1500,34 @@ async fn an_engine_taken_while_acquiring_is_never_a_silent_success() {
     );
 }
 
+/// The daemon's broadcasts never reach the injector's connection. Before
+/// 1.5.31 ibus-daemon sends them from `org.freedesktop.IBus`, no unique name,
+/// and zbus 5.18 panics on that sender in the task that reads the connection,
+/// once any match rule is registered on it, as its object server's is: a
+/// signal subscription there would leave every later call unanswered.
+#[tokio::test]
+async fn the_injector_outlives_the_daemons_broadcasts() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let field = Field::open(0, 0).await;
+    let mut injector = IbusInjector::connect()
+        .await
+        .expect("connect to IBus daemon");
+    for engine in [PICKED_ENGINE, PRIOR_ENGINE, PICKED_ENGINE, PRIOR_ENGINE] {
+        shell_sets_global_engine(&field.conn, engine)
+            .await
+            .expect("a switch, which the daemon broadcasts");
+    }
+    let asked = tokio::time::timeout(HANG_GUARD, injector.global_engine()).await;
+    assert_eq!(asked, Ok(Some(PRIOR_ENGINE.to_string())));
+    let target = tokio::time::timeout(HANG_GUARD, injector.acquire())
+        .await
+        .expect("acquire answered")
+        .expect("acquire");
+    target.release().await;
+    field.close().await;
+}
+
 /// The user picks another input source mid-dictation. The next commit ends
 /// the dictation instead of being held as through a focus blip, and the
 /// release leaves the user's choice alone rather than switching back to the
