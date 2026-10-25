@@ -49,6 +49,7 @@ assert_on "precondition: the backend is the fake" \
 assert_on "precondition: myna is the store's" \
     "snap list myna | awk 'NR == 2 && \$3 !~ /^x/' | grep -q ."
 assert_on "precondition: the daemon is idle" "$LIB; wait_until 20 dictation_state_is idle"
+assert_on "precondition: PipeWire runs realtime" "$LIB; pipewire_realtime"
 BEFORE=$(store_snaps)
 printf 'before:\n%s\n' "$BEFORE"
 SNAPS=$(awk '{print $1}' <<<"$BEFORE" | tr '\n' ' ')
@@ -125,6 +126,12 @@ assert_soon "the daemon runs again" 'systemctl --user is-active snap.myna.myna.s
 for s in $SNAPS; do
     [ "$s" = myna ] && continue
     assert_soon "$s's server runs" "systemctl is-active snap.$s.server.service"
+done
+# The refreshed servers load their models right after the refresh, which on a
+# runner's few cores starves the capture thread. The dictation goes to the
+# fake, so they have nothing left to show.
+for s in $SNAPS; do
+    [ "$s" = myna ] || on "sudo snap stop $s" >/dev/null
 done
 if $HUD; then
     assert_dict "the HUD comes back from the new revision" \
