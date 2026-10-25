@@ -96,6 +96,15 @@ state update (and a `reset`, which IBus's Wayland panel drops), so IBus never
 sees a focus change and the rest of an utterance lands in the new field. A
 KWin bug; move `other` back once it is fixed.
 
+The `upgrade` suite is the one that keeps the store's myna (`# myna: store`:
+`run-suite.sh` installs no `E2E_MYNA_SNAP` for it) and runs only with
+`E2E_UPGRADE_CHANNEL` set (`# requires:`). From the `dictation` snapshot it
+refreshes every store snap to that channel in one change with the HUD up,
+then checks revisions, components, connections and services, and dictates.
+CI runs it alone in a dispatched E2E run that `snaps.yml` starts after
+releasing a candidate to a branch. A sideloaded snap cannot test this: it
+keeps no store components and skips the old revision's refresh-mode.
+
 `dev/try-desktop.sh` (`make try-desktop`) reuses the provisioning above for a
 manual-test VM; it only ever copies the `installed` snapshot of an e2e VM.
 

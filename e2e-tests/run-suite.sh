@@ -10,7 +10,8 @@
 # E2E_VM_MEMORY=4GiB sizes the guest (default 6GiB, what CI gives it).
 # E2E_MYNA_SNAP=PATH installs that myna snap (`make snap-myna`) over the
 # store's edge one in each run, keeping its connections (not on a machine
-# that has none yet).
+# that has none yet, nor for a suite headed `# myna: store`).
+# A suite headed `# requires: VAR` is skipped unless VAR is set.
 # Suites live in suites/; none given runs them all. The build also yields
 # myna-hud-host (the Xfce HUD supervisor, which the dictation suite starts the
 # way the deb's autostart entry does); it is pushed from beside --binary.
@@ -29,7 +30,7 @@ while [ $# -gt 0 ]; do
         --release) REL=$2; shift 2 ;;
         --desktop) E2E_DESKTOP=$2; shift 2 ;;
         --binary) BINARY=$2; shift 2 ;;
-        -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) SUITES+=("$1"); shift ;;
     esac
 done
@@ -66,6 +67,11 @@ rc=0
 for SUITE in "${SUITES[@]}"; do
     FILE=$HERE/suites/$SUITE.sh
     SNAP=$(sed -n 's/^# snapshot: //p' "$FILE")
+    NEEDS=$(sed -n 's/^# requires: //p' "$FILE")
+    if [ -n "$NEEDS" ] && [ -z "${!NEEDS:-}" ]; then
+        echo "== $SUITE: skipped, $NEEDS is not set"
+        continue
+    fi
     snapshots "$VM" | grep -qx "$SNAP" \
         || { echo "$VM lacks snapshot $SNAP; run vm/provision.sh --release $REL --desktop $E2E_DESKTOP" >&2; exit 1; }
     ARTIFACTS=$RUN_DIR/artifacts/$TAG-$SUITE
@@ -83,7 +89,8 @@ for SUITE in "${SUITES[@]}"; do
     lxc exec "$RUN" -- snap refresh --hold >/dev/null
     wait_snapd_idle "$RUN"
     # Not over a machine without myna (`bare`): onboarding installs the store's.
-    if [ -n "${E2E_MYNA_SNAP:-}" ] && lxc exec "$RUN" -- snap list myna >/dev/null 2>&1; then
+    if [ -n "${E2E_MYNA_SNAP:-}" ] && ! grep -qx '# myna: store' "$FILE" \
+        && lxc exec "$RUN" -- snap list myna >/dev/null 2>&1; then
         lxc file push "$E2E_MYNA_SNAP" "$RUN/root/myna.snap"
         # A running HUD blocks the install (issue #38): stop the daemon, whose
         # bus name keeps the shell extension or the Xfce host respawning it,
