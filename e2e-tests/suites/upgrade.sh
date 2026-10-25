@@ -54,11 +54,24 @@ printf 'before:\n%s\n' "$BEFORE"
 SNAPS=$(awk '{print $1}' <<<"$BEFORE" | tr '\n' ' ')
 
 echo "-- 1. the refresh, with the HUD up"
-[ "$DESKTOP" = gnome ] || assert_dict "the HUD is up" 'hud_host_start'
+[ "$DESKTOP" = gnome ] || dict 'hud_host_start' >/dev/null
+# Up means one HUD that stays: a revision that lacks the host the desktop
+# needs (layer-shell came after 0.2.4) exits at once and is respawned, which
+# snapd never sees as running.
 HUD=false
 # shellcheck disable=SC2016 # expands in the VM
-on 'pgrep -u "$USER" -x myna-hud' >/dev/null && HUD=true
-echo "the HUD runs: $HUD"
+on 'p=$(pgrep -nu "$USER" -x myna-hud) && sleep 2 && [ "$(pgrep -nu "$USER" -x myna-hud)" = "$p" ]' \
+    >/dev/null && HUD=true
+case $DESKTOP in
+    xubuntu) expect=true ;;
+    kde) expect=false; on 'snap run myna.hud --help | grep -q layer-shell' >/dev/null && expect=true ;;
+    gnome) expect=$HUD ;; # only Stonking's packaged extension hosts one
+esac
+if [ "$HUD" = "$expect" ]; then
+    echo "PASS: the HUD runs as the installed revision can ($HUD)"
+else
+    echo "FAIL: the HUD runs as the installed revision can ($HUD, expected $expect)"; FAILED=1
+fi
 # The revision being replaced decides whether snapd counts the HUD as busy.
 ignored=false
 on "python3 -c 'import sys, yaml
