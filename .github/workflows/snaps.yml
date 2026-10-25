@@ -1,14 +1,15 @@
-# The four published snaps, built natively on an arm64 runner (snapcraft does
-# not cross-build), smoke-tested there with myna-bench on a few LibriSpeech
-# clips, and released to latest/edge for arm64 only. A release tag runs it;
-# amd64 is still published by hand (.kb/releasing.md).
+# The four published snaps, built natively on an amd64 and an arm64 runner
+# (snapcraft does not cross-build), smoke-tested there with myna-bench on a few
+# LibriSpeech clips, and released. A release tag releases to edge; a manual run
+# can release to a branch such as edge/rc1 to try a candidate as a store
+# refresh before tagging it.
 #
 # Publishing needs the store-edge environment's SNAPCRAFT_STORE_CREDENTIALS
-# (snapcraft export-login scoped to these snaps and edge), so it only happens
-# in a repository whose ARM64_PUBLISH variable is true. Elsewhere the tag still
+# (snapcraft export-login scoped to these snaps), so it only happens in a
+# repository whose SNAP_PUBLISH variable is true. Elsewhere the tag still
 # builds and smoke-tests. A snap whose build or smoke fails uploads no
 # artifact, so its publish leg fails and the others go ahead.
-name: arm64 snaps
+name: snaps
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,9 +18,13 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Release the builds to latest/edge
+        description: Release the builds to CHANNEL
         type: boolean
         default: false
+      channel:
+        description: Channel to release to, e.g. edge or edge/rc1
+        type: string
+        default: edge
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
@@ -28,6 +33,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        arch: [amd64, arm64]
+        snap: [myna, parakeet, whisper, funasr]
         include:
           - snap: myna
             name: myna
@@ -46,8 +53,8 @@ jobs:
             fetch: uv run --no-project --with 'modelscope>=1.34' python dev/fetch_funasr_model.py --target ./funasr-snap/components/model-sensevoice-onnx
             model: sensevoice
             component: model-sensevoice
-    name: build (${{ matrix.snap }})
-    runs-on: ubuntu-24.04-arm
+    name: build (${{ matrix.snap }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 150
     steps:
       # Full history: dev/version.sh counts commits since the last tag.
@@ -121,14 +128,14 @@ jobs:
       - if: always() && matrix.model
         uses: actions/upload-artifact@v7
         with:
-          name: smoke-${{ matrix.snap }}
+          name: smoke-${{ matrix.snap }}-${{ matrix.arch }}
           retention-days: 14
           path: smoke.jsonl
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v7
         with:
-          name: snap-${{ matrix.snap }}-arm64
+          name: snap-${{ matrix.snap }}-${{ matrix.arch }}
           retention-days: 14
           path: |
             ${{ matrix.snap }}-snap/*.snap
@@ -136,7 +143,7 @@ jobs:
             ${{ matrix.snap }}-snap/version/version.metainfo.xml
           if-no-files-found: error
 
-      # What an arm64 tester runs: dev/bench-edge.sh against the edge snaps.
+      # What a tester runs: dev/bench-edge.sh against the edge snaps.
       - name: Tester bundle
         if: matrix.snap == 'whisper'
         run: |
@@ -145,32 +152,33 @@ jobs:
       - if: matrix.snap == 'whisper'
         uses: actions/upload-artifact@v7
         with:
-          name: myna-bench-arm64
+          name: myna-bench-${{ matrix.arch }}
           retention-days: 14
           path: bundle/
 
   publish:
     needs: build
-    if: ${{ !cancelled() && vars.ARM64_PUBLISH == 'true' && (github.event_name == 'push' || inputs.publish) }}
+    if: ${{ !cancelled() && vars.SNAP_PUBLISH == 'true' && (github.event_name == 'push' || inputs.publish) }}
     strategy:
       fail-fast: false
       matrix:
+        arch: [amd64, arm64]
         snap: [myna, parakeet, whisper, funasr]
-    name: publish (${{ matrix.snap }})
-    runs-on: ubuntu-24.04-arm
+    name: publish (${{ matrix.snap }}, ${{ matrix.arch }})
+    # publish-snap.sh names the .snap after this runner's architecture.
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     environment: store-edge
     steps:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v8
         with:
-          name: snap-${{ matrix.snap }}-arm64
+          name: snap-${{ matrix.snap }}-${{ matrix.arch }}
           path: ${{ matrix.snap }}-snap
       - name: Upload and release
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+          CHANNEL: ${{ inputs.channel || 'edge' }}
         run: |
           sudo apt-get update && sudo apt-get install -y squashfs-tools
           sudo snap install snapcraft --classic
-          # "edge", not "latest/edge": the credential's channel restriction matches the
-          # string, and refuses the spelled-out form of the same channel.
-          dev/publish-snap.sh ${{ matrix.snap }}-snap edge
+          dev/publish-snap.sh ${{ matrix.snap }}-snap "$CHANNEL"
