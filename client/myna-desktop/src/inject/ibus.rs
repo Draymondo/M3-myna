@@ -1334,15 +1334,14 @@ pub const CAPABILITIES: TextInputCapabilities = TextInputCapabilities {
     secure_field_detection: Support::Supported,
 };
 
-#[async_trait]
-impl Injector for IbusInjector {
-    /// Acquiring switches the global engine to ours. The rollback on error
-    /// can only restore an input method the connection was able to read.
-    async fn acquire(&mut self) -> Result<Box<dyn Target>, InjectError> {
-        // Read before the switch; recorded once it has succeeded.
-        let displaced = self.global_engine_name().await;
-
-        call(&self.conn, "RegisterComponent", &(ibus_component(),)).await?;
+impl IbusInjector {
+    /// Make our engine global under a new lease, recording `displaced` as the
+    /// engine to restore once that succeeds, and wait for the daemon to focus
+    /// it. Whether the focus came is the second value.
+    async fn switch(
+        &self,
+        displaced: Option<String>,
+    ) -> Result<(Box<IbusTarget>, bool), InjectError> {
         self.state.content_type.send_replace(ContentType::default());
         // Before the switch, which focuses the engine before it returns.
         let lease = self.state.mint();
@@ -1366,21 +1365,111 @@ impl Injector for IbusInjector {
         if focus_received {
             tokio::time::sleep(CONTENT_TYPE_GRACE).await;
         }
+        Ok((target, focus_received))
+    }
 
-        // The switch answering is no proof it stuck: an engine made global
-        // just after it, by the Shell or the user, wins without failing it.
-        match global_engine_of(&self.conn).await {
-            Ok(Some(name)) if name == ENGINE_NAME => {}
-            Ok(now) => {
-                myna_core::dbg_log!("inject", "acquire refused: the global engine is {now:?}");
-                target.release().await;
-                return Err(InjectError::FocusLost);
+    /// The global engine once it is no longer `before`, or after
+    /// `FOCUS_WAIT`. The daemon cancels a switch as soon as a newer one
+    /// arrives, but names the newer one's engine only once that is done.
+    async fn switched_since(&self, before: Option<&str>) -> Option<String> {
+        let deadline = tokio::time::Instant::now() + FOCUS_WAIT;
+        loop {
+            let now = self.global_engine_name().await;
+            if now.as_deref() != before || tokio::time::Instant::now() >= deadline {
+                return now;
             }
-            Err(err) => {
-                target.release().await;
-                return Err(err);
-            }
+            tokio::time::sleep(SWITCH_POLL).await;
         }
+    }
+}
+
+/// How often a failed switch asks whether another engine is landing.
+const SWITCH_POLL: Duration = Duration::from_millis(10);
+
+/// How many times an acquire makes our engine global: the first switch and
+/// one claim back.
+const SWITCHES: u32 = 2;
+
+/// How an acquire's switch to our engine went.
+#[derive(Debug, Clone, Copy)]
+enum Switched<'a> {
+    Answered,
+    /// The daemon failed it; `before` was global before the press.
+    Failed {
+        before: Option<&'a str>,
+    },
+}
+
+/// Whether an acquire switches to our engine again, its `switch`th switch
+/// (from 1) having left `now` global. Before capture starts the taker is
+/// nearly always GNOME Shell re-applying its source to a new IBus daemon, so
+/// the engine is claimed back, once: an engine that keeps taking it wins. A
+/// failed switch counts only when another engine became global since, which
+/// is how the daemon cancels a switch for a newer one.
+fn reclaims(switch: u32, switched: Switched<'_>, now: Option<&str>) -> bool {
+    let Some(now) = now.filter(|now| !now.is_empty() && *now != ENGINE_NAME) else {
+        return false;
+    };
+    switch < SWITCHES
+        && match switched {
+            Switched::Answered => true,
+            Switched::Failed { before } => before != Some(now),
+        }
+}
+
+#[async_trait]
+impl Injector for IbusInjector {
+    /// Acquiring switches the global engine to ours. The rollback on error
+    /// can only restore an input method the connection was able to read.
+    async fn acquire(&mut self) -> Result<Box<dyn Target>, InjectError> {
+        // Read before the switch; recorded once it has succeeded.
+        let before = self.global_engine_name().await;
+
+        call(&self.conn, "RegisterComponent", &(ibus_component(),)).await?;
+        let mut displaced = before.clone();
+        let mut switch = 1;
+        let (target, focus_received) = loop {
+            // The switch answering is no proof it stuck: an engine made global
+            // just after it, by the Shell or the user, wins without failing it.
+            let (taker, error) = match self.switch(displaced.clone()).await {
+                Ok((target, focus_received)) => match global_engine_of(&self.conn).await {
+                    Ok(Some(name)) if name == ENGINE_NAME => break (target, focus_received),
+                    Ok(now) if reclaims(switch, Switched::Answered, now.as_deref()) => {
+                        self.state.taken(target.lease);
+                        (now, None)
+                    }
+                    Ok(now) => {
+                        myna_core::dbg_log!(
+                            "inject",
+                            "acquire refused: the global engine is {now:?}"
+                        );
+                        target.release().await;
+                        return Err(InjectError::FocusLost);
+                    }
+                    Err(err) => {
+                        target.release().await;
+                        return Err(err);
+                    }
+                },
+                Err(err) => {
+                    let now = self.switched_since(before.as_deref()).await;
+                    let failed = Switched::Failed {
+                        before: before.as_deref(),
+                    };
+                    if !reclaims(switch, failed, now.as_deref()) {
+                        return Err(err);
+                    }
+                    (now, Some(err))
+                }
+            };
+            myna_core::dbg_log!(
+                "inject",
+                "acquire: {taker:?} took the global engine ({error:?}); claiming it back"
+            );
+            displaced = taker;
+            switch += 1;
+        };
+        let lease = target.lease;
 
         if self.state.on_fake(lease) {
             myna_core::dbg_log!("inject", "acquire refused: no field took focus back");
@@ -2311,6 +2400,36 @@ mod tests {
             "the live lease learns of it at its own check"
         );
         assert_eq!(state.reclaim(state.retire(live)), None);
+    }
+
+    /// An engine made global over the first switch is claimed back once;
+    /// one that takes it again wins. A failed switch is retried only when
+    /// another engine became global since.
+    #[test]
+    fn an_acquire_claims_the_engine_back_once() {
+        const SHELL: Option<&str> = Some(USER_ENGINE);
+        let fresh = Switched::Failed { before: None };
+        let same = Switched::Failed { before: SHELL };
+        assert!(
+            reclaims(1, Switched::Answered, SHELL),
+            "taken over the switch"
+        );
+        assert!(
+            !reclaims(2, Switched::Answered, SHELL),
+            "taken over the claim back"
+        );
+        assert!(
+            !reclaims(1, Switched::Answered, None),
+            "no engine named is no taker"
+        );
+        assert!(!reclaims(1, Switched::Answered, Some(ENGINE_NAME)));
+        assert!(!reclaims(1, Switched::Answered, Some("")));
+        assert!(
+            reclaims(1, fresh, SHELL),
+            "cancelled for the Shell's switch"
+        );
+        assert!(!reclaims(1, same, SHELL), "failed with nothing taken");
+        assert!(!reclaims(2, fresh, SHELL));
     }
 
     const APP: &str = "gtk4-im:mousepad";

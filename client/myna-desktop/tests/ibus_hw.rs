@@ -1457,14 +1457,17 @@ async fn shell_sets_global_engine(conn: &Connection, engine: &str) -> zbus::Resu
 }
 
 /// The Shell re-applying the input source just after the first press on a
-/// fresh daemon. Whichever switch wins, a dictation that acquires and commits
-/// without an error has its text in the field: an engine taken away is a
-/// visible failure, never a commit into nowhere.
+/// fresh daemon, as it does after every IBus restart. Whichever switch wins,
+/// the press acquires and its text reaches the field: the acquire claims the
+/// engine back once rather than failing the press, or committing into
+/// nowhere. The release hands the Shell's source back, unless the Shell's
+/// switch landed between the acquire reading the global engine and switching:
+/// then the switch displaced an engine it never learnt of, and ours stays.
 #[tokio::test]
-async fn an_engine_taken_while_acquiring_is_never_a_silent_success() {
+async fn an_engine_taken_while_acquiring_is_claimed_back() {
     skip_unless_ibus!();
     let _serial = exclusive().await;
-    let mut silent = Vec::new();
+    let mut failed = Vec::new();
     for trial in 0..40u64 {
         let daemon = FreshDaemon::start().await;
         let mut field = Field::open_at(&daemon.address, "myna-ibus-hw", 0, 0).await;
@@ -1482,22 +1485,87 @@ async fn an_engine_taken_while_acquiring_is_never_a_silent_success() {
         );
         let Ok(Ok(mut target)) = acquired else {
             eprintln!("trial {trial}: acquire {acquired:?}");
+            failed.push(trial);
             field.close().await;
             continue;
         };
-        let committed = target.commit("lost?").await;
+        let committed = target.commit("kept").await;
         let seen = field.next_within(NOTICE).await;
-        eprintln!("trial {trial}: commit {committed:?}, field saw {seen:?}");
-        if committed.is_ok() && seen.is_none() {
-            silent.push(trial);
-        }
         target.release().await;
+        let restored = injector.global_engine().await;
+        eprintln!("trial {trial}: commit {committed:?}, field saw {seen:?}, then {restored:?}");
+        if committed.is_err()
+            || seen != Some(Seen::Commit("kept".into()))
+            || !matches!(restored.as_deref(), Some(PRIOR_ENGINE | MYNA_ENGINE))
+        {
+            failed.push(trial);
+        }
         field.close().await;
     }
     assert!(
-        silent.is_empty(),
-        "commits that reported Ok and reached nothing, by shell delay in ms: {silent:?}"
+        failed.is_empty(),
+        "presses that did not reach the field, by shell delay in ms: {failed:?}"
     );
+}
+
+/// Acquire while a rival makes `PICKED_ENGINE` global each time ours becomes
+/// global, `takes` times. The injector is handed back alive: the daemon
+/// clears the global engine when its connection closes.
+async fn acquire_against_a_rival(
+    takes: usize,
+) -> (Result<Box<dyn Target>, InjectError>, Field, IbusInjector) {
+    let (mut field, mut injector) = session(0, 0).await;
+    field.watch_global_engine().await;
+    let rival = async {
+        for _ in 0..takes {
+            field.wait_global_engine(MYNA_ENGINE).await;
+            shell_sets_global_engine(&field.conn, PICKED_ENGINE)
+                .await
+                .expect("the rival's switch");
+        }
+    };
+    let (acquired, ()) = tokio::join!(
+        async {
+            tokio::time::timeout(HANG_GUARD, injector.acquire())
+                .await
+                .expect("acquire within the hang guard")
+        },
+        rival
+    );
+    field.forget_delivered();
+    (acquired, field, injector)
+}
+
+/// Another source picked over the switch, as the user may just after the
+/// press: the acquire claims the engine back, and the release restores that
+/// source, the latest one, not the one before the press.
+#[tokio::test]
+async fn an_engine_taken_once_while_acquiring_is_claimed_back_and_restored() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let (acquired, mut field, _injector) = acquire_against_a_rival(1).await;
+    let mut target = acquired.expect("claimed back");
+    target.commit("kept").await.expect("commit");
+    assert_eq!(field.next().await, Seen::Commit("kept".into()));
+    target.release().await;
+    assert_eq!(global_engine().await.as_deref(), Some(PICKED_ENGINE));
+    field.close().await;
+}
+
+/// An engine that takes the global one back from every switch: the acquire
+/// claims it back once, then gives the press up as `FocusLost` and leaves
+/// that engine global, rather than fighting it.
+#[tokio::test]
+async fn an_engine_that_takes_it_twice_wins() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let (acquired, field, _injector) = acquire_against_a_rival(2).await;
+    assert!(
+        matches!(acquired, Err(InjectError::FocusLost)),
+        "claimed back once, then refused: {acquired:?}"
+    );
+    assert_eq!(global_engine().await.as_deref(), Some(PICKED_ENGINE));
+    field.close().await;
 }
 
 /// The daemon's broadcasts never reach the injector's connection. Before
