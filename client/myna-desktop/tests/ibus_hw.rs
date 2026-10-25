@@ -630,13 +630,21 @@ async fn global_engine() -> Option<String> {
 }
 
 /// A focused field of the given content type, the prior engine global, and an
-/// injector that has not acquired yet.
+/// injector whose next acquire is a steady-state one. Each connection's first
+/// activation is not: ibus 1.5.29 focuses a newly registered engine with a
+/// plain `FocusIn` and names no context until focus moves, which the cases on
+/// a fresh daemon cover. So the injector acquires and releases once first.
 async fn session(purpose: u32, hints: u32) -> (Field, IbusInjector) {
-    let field = Field::open(purpose, hints).await;
+    let mut field = Field::open(purpose, hints).await;
     field.use_prior_engine().await;
-    let injector = IbusInjector::connect()
+    let mut injector = IbusInjector::connect()
         .await
         .expect("connect to IBus daemon");
+    if let Ok(target) = injector.acquire().await {
+        target.release().await;
+    }
+    assert_eq!(global_engine().await.as_deref(), Some(PRIOR_ENGINE));
+    field.forget_delivered();
     (field, injector)
 }
 
