@@ -9,8 +9,9 @@
 # no store components, gets no store-granted connections and skips the
 # refresh-mode of the revision it replaces.
 #
-#   1. with the HUD up (Xubuntu, Plasma: GNOME's extension is not in the VM),
-#      the refresh goes ahead once the revision it starts from marks the HUD
+#   1. with the HUD up (hosted by myna-hud-host on Xubuntu and Plasma, by the
+#      extension Stonking's gnome-shell-ubuntu-extensions ships; Noble's and
+#      Resolute's GNOME have none in the VM), the refresh goes ahead once the revision it starts from marks the HUD
 #      refresh-mode: ignore-running (issue #38); from an older one the HUD is
 #      stopped first, as its users wait for logout or the forced refresh
 #   2. every store snap tracks the channel at a new revision with as many
@@ -39,8 +40,6 @@ store_snaps() {
         c = \"-\"; if (match(\$6, /components\\[[0-9]+/)) c = substr(\$6, RSTART + 11, RLENGTH - 11)
         print \$1, \$3, c }'"
 }
-HUD=false
-[ "$DESKTOP" = gnome ] || HUD=true
 
 on 'mkdir -p myna-shot/out'
 lxc file push --uid 1000 --gid 1000 "$REPO/tests/spread/adapter-smoke/fixture.wav" "$VM/home/ubuntu/myna-shot/speech.wav"
@@ -55,9 +54,11 @@ printf 'before:\n%s\n' "$BEFORE"
 SNAPS=$(awk '{print $1}' <<<"$BEFORE" | tr '\n' ' ')
 
 echo "-- 1. the refresh, with the HUD up"
-if $HUD; then
-    assert_dict "the HUD is up" 'hud_host_start'
-fi
+[ "$DESKTOP" = gnome ] || assert_dict "the HUD is up" 'hud_host_start'
+HUD=false
+# shellcheck disable=SC2016 # expands in the VM
+on 'pgrep -u "$USER" -x myna-hud' >/dev/null && HUD=true
+echo "the HUD runs: $HUD"
 # The revision being replaced decides whether snapd counts the HUD as busy.
 ignored=false
 on "python3 -c 'import sys, yaml
@@ -81,7 +82,7 @@ else
     on 'snap tasks --last=refresh' || true
 fi
 # The stopped host comes back as it would at the next login.
-if $HUD && ! $ignored; then
+if $HUD && ! $ignored && [ "$DESKTOP" != gnome ]; then
     dict 'hud_host_start' >/dev/null || true
 fi
 
