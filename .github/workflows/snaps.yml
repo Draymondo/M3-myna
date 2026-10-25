@@ -182,3 +182,18 @@ jobs:
           sudo apt-get update && sudo apt-get install -y squashfs-tools
           sudo snap install snapcraft --classic
           dev/publish-snap.sh ${{ matrix.snap }}-snap "$CHANNEL"
+
+  # A candidate on a branch is tried as the upgrade users will get: the
+  # store's edge snaps refreshed to it, in the e2e VMs (e2e-tests/suites/upgrade.sh).
+  upgrade-e2e:
+    needs: publish
+    if: ${{ !cancelled() && needs.publish.result == 'success' && inputs.publish && !contains(fromJSON('["edge", "latest/edge"]'), inputs.channel) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel }}
+        run: gh workflow run e2e.yml -R "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f upgrade_channel="latest/${CHANNEL#latest/}"

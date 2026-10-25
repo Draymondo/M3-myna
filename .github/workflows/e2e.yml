@@ -11,16 +11,24 @@
 # Nightly, the Xubuntu and Kubuntu screenshots are laid beside the last green
 # nightly's in a contact sheet (the `contact-sheet` job); see
 # e2e-tests/AGENTS.md.
+# A run dispatched with upgrade_channel (snaps.yml does, after releasing a
+# candidate) runs only the upgrade suite: the store's edge snaps refreshed to
+# that channel.
 name: E2E
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}-${{ inputs.upgrade_channel }}
   cancel-in-progress: true
 
 on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      upgrade_channel:
+        description: Run only the upgrade suite, refreshing to this channel (e.g. latest/edge/rc1)
+        type: string
+        default: ""
   pull_request:
 
 jobs:
@@ -156,9 +164,11 @@ jobs:
       - run: lxc storage create e2e btrfs size=60GiB
       - run: |
           E2E_MYNA_SNAP=$(ls "$PWD"/myna-snap/myna_*_amd64.snap) \
-            make e2e E2E_RELEASE=${{ matrix.release }} E2E_DESKTOP=${{ matrix.desktop }}
+            make e2e E2E_RELEASE=${{ matrix.release }} E2E_DESKTOP=${{ matrix.desktop }} \
+              ${{ inputs.upgrade_channel && 'SUITES=upgrade' || '' }}
         env:
           E2E_POOL: e2e
+          E2E_UPGRADE_CHANNEL: ${{ inputs.upgrade_channel }}
       - if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -198,7 +208,7 @@ jobs:
   # dispatched run on main that kept its screenshots; re-baselining is
   # dispatching E2E on main. Nothing is asserted here: the page is for a human.
   contact-sheet:
-    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && !inputs.upgrade_channel }}
     needs: e2e
     strategy:
       fail-fast: false
