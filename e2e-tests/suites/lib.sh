@@ -85,6 +85,25 @@ assert_input_method_up() {
     esac
 }
 
+# What the myna-config deb adds for the indicator on Xfce and Plasma, put in
+# place in the running session as installing the deb does: the HUD host and
+# its autostart entry, which only the next login would start.
+install_hud_host_entry() {
+    [ "$DESKTOP" != gnome ] || return 0
+    local entry
+    entry=$(dirname "${BASH_SOURCE[0]}")/../../client/myna-config/data/com.canonical.Myna.HudHost.desktop
+    lxc file push "$entry" "$VM/etc/xdg/autostart/"
+    on 'sudo install -D -m 0755 myna-shot/myna-hud-host /usr/libexec/myna-config/myna-hud-host'
+}
+
+# The indicator's host is up: the HUD host the autostart entry names, on Xfce
+# and Plasma.
+# shellcheck disable=SC2016 # the command expands in the VM
+assert_hud_host_up() {
+    [ "$DESKTOP" != gnome ] || return 0
+    assert_soon "the HUD host is running" 'pgrep -u "$USER" -x myna-hud-host'
+}
+
 suite_status() {
     [ $FAILED -eq 0 ] || { echo "suite had failures" >&2; exit 1; }
 }
