@@ -5,7 +5,10 @@
 #   dev/release-notes.sh [<since-tag>]
 #
 # Features and fixes are listed per scope; tests, CI, build, refactors, docs
-# and the developer-only scopes are left out, as no user sees them.
+# and the developer-only scopes are left out, as no user sees them. A commit
+# that names GitHub issues in its body (#79, not LP: #N) ends with them, so
+# the notes link what a release closes; a mention of a related issue lands
+# there too, for the human cutting the draft to judge.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,10 +18,17 @@ internal='^(benchmarker|bench|e2e|dev|spread|ci|workshop)$'
 section() {
     local type=$1 title=$2
     local lines
-    lines=$(git -C "$repo_root" log --reverse --no-merges --format=%s "$since..HEAD" |
-        sed -n -E "s/^$type(\(([^)]*)\))?!?: (.*)/\2\t\3/p" |
+    lines=$(git -C "$repo_root" log --reverse --no-merges --format=%H "$since..HEAD" |
+        while read -r commit; do
+            subject=$(git -C "$repo_root" log -1 --format=%s "$commit")
+            refs=$(git -C "$repo_root" log -1 --format=%b "$commit" |
+                grep -oP '(?<!LP: )(?<![\w/#])#\d+\b' | awk '!seen[$0]++' | paste -sd' ' -) || true
+            printf '%s\t%s\n' "$subject" "$refs"
+        done |
+        sed -n -E "s/^$type(\(([^)]*)\))?!?: ([^\t]*)\t(.*)/\2\t\3\t\4/p" |
         awk -F'\t' -v internal="$internal" '$1 !~ internal {
-            print "- " ($1 == "" ? "" : $1 ": ") $2 }')
+            refs = $3 == "" ? "" : " (" $3 ")"
+            print "- " ($1 == "" ? "" : $1 ": ") $2 refs }')
     [[ -n $lines ]] || return 0
     printf '\n## %s\n\n%s\n' "$title" "$lines"
 }
