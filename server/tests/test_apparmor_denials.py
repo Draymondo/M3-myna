@@ -121,7 +121,6 @@ RTKIT = (
         kernel("snap.myna.hud", "/etc/vulkan/icd.d/", "myna-hud"),
         kernel("snap.myna.hud", "/etc/vulkan/implicit_layer.d/", "myna-hud"),
         PORTAL,
-        RTKIT,
         CAPABLE,
     ],
 )
@@ -140,8 +139,8 @@ def test_known_harmless_denials_are_allowed(line):
         kernel("snap.myna.hud", "/etc/vulkan/icd.d/nvidia.json", "myna-hud"),
         PORTAL.replace("snap.myna.hud", "snap.myna.myna"),
         PORTAL.replace('member="Register"', 'member="Unregister"'),
-        RTKIT.replace('bus="system"', 'bus="session"'),
-        RTKIT.replace("snap.myna.myna", "snap.myna.hud"),
+        # Capture falling back to RealtimeKit has lost realtime (myna#76).
+        RTKIT,
         CAPABLE.replace('capname="dac_override"', 'capname="sys_admin"'),
         CAPABLE.replace("hook.install", "server"),
         dbus("snap.myna.myna", "unconfined"),
