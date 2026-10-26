@@ -121,7 +121,6 @@ RTKIT = (
         kernel("snap.myna.hud", "/etc/vulkan/icd.d/", "myna-hud"),
         kernel("snap.myna.hud", "/etc/vulkan/implicit_layer.d/", "myna-hud"),
         PORTAL,
-        CAPABLE,
     ],
 )
 def test_known_harmless_denials_are_allowed(line):
@@ -141,8 +140,8 @@ def test_known_harmless_denials_are_allowed(line):
         PORTAL.replace('member="Register"', 'member="Unregister"'),
         # Capture falling back to RealtimeKit has lost realtime (myna#76).
         RTKIT,
-        CAPABLE.replace('capname="dac_override"', 'capname="sys_admin"'),
-        CAPABLE.replace("hook.install", "server"),
+        # Hooks log through pipes since 5dae45b8, which 0.3.0 ships.
+        CAPABLE,
         dbus("snap.myna.myna", "unconfined"),
         dbus("snap.myna.myna", "snap.myna.hud"),
         dbus("snap.myna.hud", "desktop-icons-ng"),

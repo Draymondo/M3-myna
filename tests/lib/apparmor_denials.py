@@ -91,15 +91,6 @@ ALLOWED: tuple[Allowed, ...] = (
         "GTK before f4206d04 takes a snap for unsandboxed and registers it with"
         " the portal, ignoring the error",
     ),
-    # Delete once the store's edge snaps are built from 5dae45b8 or later.
-    Allowed(
-        {
-            "subject": r"snap\.myna-(whisper|parakeet|funasr)\.hook\..+",
-            "operation": "capable",
-            "capname": "dac_override",
-        },
-        "hooks from before 5dae45b8 log through >(...), opening /dev/fd/N with O_CREAT",
-    ),
 )
 
 
