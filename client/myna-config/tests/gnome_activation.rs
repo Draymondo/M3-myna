@@ -329,21 +329,27 @@ mod conformance {
         }
 
         fn settle(&mut self) {
-            let context = gio::glib::MainContext::default();
+            let context = gio::glib::MainContext::ref_thread_default();
             while context.iteration(false) {}
         }
     }
 
+    // Its own context: the tests beside it run on other threads, and one of
+    // them iterating the default context starves this one's settle.
     #[test]
     fn gnome_passes_the_activation_suite() {
-        let (dir, source) = schemas("conformance");
-        let report = run(&mut Gnome {
-            _dir: dir,
-            source,
-            backend: gio::functions::memory_settings_backend_new(),
-            holds: 0,
-        });
-        assert!(report.not_applicable.is_empty(), "{report:?}");
-        assert_eq!(report.passed.len(), 9);
+        gio::glib::MainContext::new()
+            .with_thread_default(|| {
+                let (dir, source) = schemas("conformance");
+                let report = run(&mut Gnome {
+                    _dir: dir,
+                    source,
+                    backend: gio::functions::memory_settings_backend_new(),
+                    holds: 0,
+                });
+                assert!(report.not_applicable.is_empty(), "{report:?}");
+                assert_eq!(report.passed.len(), 9);
+            })
+            .unwrap();
     }
 }
