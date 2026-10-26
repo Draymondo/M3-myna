@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-23 09:57+0100\n"
+"POT-Creation-Date: 2026-10-26 20:05+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -334,11 +334,11 @@ msgid "Installing the speech-to-text model failed"
 msgstr ""
 
 #: src/app.rs:4269 src/onboarding_ui.rs:1070
-msgid "Enabling shell extension"
+msgid "Setting up the dictation indicator"
 msgstr ""
 
 #: src/app.rs:4442 src/onboarding_ui.rs:1091
-msgid "Enabling the shell extension failed"
+msgid "Setting up the dictation indicator failed"
 msgstr ""
 
 #: src/app.rs:4455 src/backend_ui.rs:2545

@@ -172,7 +172,7 @@ is missing, and a machine with nothing left shows the button insensitive and
 labelled "Installed". While the run goes the button is insensitive and reads
 "Installing…", and a spinner below it names the step: "Enabling user daemons
 support", "Installing Dictation app", "Installing speech-to-text model" or
-"Enabling shell extension", with the download's percentage once one
+"Setting up the dictation indicator", with the download's percentage once one
 announces its size. While a run or the set-up after it goes, the install
 button stays sensitive but takes no input and is dimmed like an insensitive
 one: a button that turned insensitive would drop the window's focus, and a

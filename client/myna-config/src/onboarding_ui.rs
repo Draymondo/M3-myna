@@ -1067,7 +1067,7 @@ fn step_text(id: ComponentId, percent: Option<u8>) -> String {
         ComponentId::Myna => gettextrs::gettext("Installing Dictation app"),
         ComponentId::Model => gettextrs::gettext("Installing speech-to-text model"),
         ComponentId::InputMethod => gettextrs::gettext("Setting up the input method"),
-        ComponentId::StatusSurface => gettextrs::gettext("Enabling shell extension"),
+        ComponentId::StatusSurface => gettextrs::gettext("Setting up the dictation indicator"),
     };
     match percent {
         Some(percent) => {
@@ -1088,7 +1088,9 @@ fn install_failed(id: ComponentId) -> String {
         ComponentId::Myna => gettextrs::gettext("Installing the Dictation app failed"),
         ComponentId::Model => gettextrs::gettext("Installing the speech-to-text model failed"),
         ComponentId::InputMethod => gettextrs::gettext("Setting up the input method failed"),
-        ComponentId::StatusSurface => gettextrs::gettext("Enabling the shell extension failed"),
+        ComponentId::StatusSurface => {
+            gettextrs::gettext("Setting up the dictation indicator failed")
+        }
     }
 }
 
