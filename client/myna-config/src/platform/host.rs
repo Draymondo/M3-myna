@@ -13,7 +13,7 @@ use myna_platform::components::{
     Blocker, Component, ComponentError, ComponentStatus, Components, Purpose, StepKind,
 };
 
-use crate::command::CommandRunner;
+use crate::command::{CancellationToken, CommandError, CommandRequest, CommandRunner};
 
 /// IBus as the active input method.
 pub const IBUS: &str = "ibus";
@@ -23,6 +23,7 @@ pub const IBUS: &str = "ibus";
 pub const HUD_HOST_AUTOSTART: &str = "com.canonical.Myna.HudHost.desktop";
 /// The supervisor the entry starts (`hud_host`).
 const HUD_HOST_PROCESS: &str = "myna-hud-host";
+const SYSTEMD_RUN: &str = "systemd-run";
 
 /// How a desktop makes IBus the input method.
 #[async_trait(?Send)]
@@ -84,14 +85,7 @@ impl<S: IbusSetup> Components for HostComponents<S> {
     async fn enable(&self, id: &str) -> Result<(), ComponentError> {
         match id {
             IBUS => {}
-            // Myna Settings cannot install the entry; only the package does.
-            HUD_HOST_AUTOSTART => {
-                return Err(ComponentError::Failed {
-                    kind: StepKind::Setting,
-                    step: HUD_HOST_AUTOSTART.to_owned(),
-                    message: "the myna-config package installs it".to_owned(),
-                })
-            }
+            HUD_HOST_AUTOSTART => return self.start_hud_host().await,
             _ => return Err(ComponentError::Unknown(id.to_owned())),
         }
         let failed = |message: &str| Err(command_failed(S::STEP, message));
@@ -106,6 +100,56 @@ impl<S: IbusSetup> Components for HostComponents<S> {
                 S::SETTINGS
             )),
             ComponentStatus::Failed => failed("IBus is not running"),
+        }
+    }
+}
+
+impl<S> HostComponents<S> {
+    /// Start the host an entry installed since login names, which the
+    /// session would only start at the next one. It runs as a transient user
+    /// unit, in the session's environment as the user manager holds it, the
+    /// way Plasma runs autostart entries, rather than in Myna Settings' own.
+    async fn start_hud_host(&self) -> Result<(), ComponentError> {
+        let setting = |message: &str| {
+            Err(ComponentError::Failed {
+                kind: StepKind::Setting,
+                step: HUD_HOST_AUTOSTART.to_owned(),
+                message: message.to_owned(),
+            })
+        };
+        match self.host.hud_host_status() {
+            ComponentStatus::Active | ComponentStatus::ActiveAfterRelogin => return Ok(()),
+            // Myna Settings cannot install the entry; only the package does.
+            ComponentStatus::Unavailable => return setting("the myna-config package installs it"),
+            ComponentStatus::Blocked(_) => {
+                return setting("it is turned off in the session's autostart settings")
+            }
+            ComponentStatus::Inactive | ComponentStatus::NeedsRelogin | ComponentStatus::Failed => {
+            }
+        }
+        let Some(exec) = self.host.hud_host_entry().and_then(|entry| {
+            let file = glib::KeyFile::new();
+            file.load_from_file(entry, glib::KeyFileFlags::NONE).ok()?;
+            let exec = file.string("Desktop Entry", "Exec").ok()?;
+            glib::shell_parse_argv(exec.as_str()).ok()
+        }) else {
+            return setting("its Exec line cannot be read");
+        };
+        let mut arguments = [
+            "--user",
+            "--collect",
+            "--quiet",
+            &format!("--unit={HUD_HOST_PROCESS}"),
+            "--",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        arguments.extend(exec.iter().map(|word| word.to_string_lossy().into_owned()));
+        let request = CommandRequest::new(SYSTEMD_RUN.to_owned(), arguments);
+        match self.runner.run(request, CancellationToken::new()).await {
+            Ok(_) => Ok(()),
+            Err(CommandError::Cancelled) => Err(ComponentError::Cancelled),
+            Err(error) => Err(command_failed(SYSTEMD_RUN, &error.to_string())),
         }
     }
 }
@@ -150,13 +194,16 @@ impl Host {
             .any(|dir| dir.join("ibus-daemon").is_file())
     }
 
-    pub fn hud_host_status(&self) -> ComponentStatus {
-        let installed = self
-            .config_dirs
+    /// The entry the package installed, from the most preferred directory.
+    fn hud_host_entry(&self) -> Option<PathBuf> {
+        self.config_dirs
             .iter()
             .map(|dir| dir.join("autostart").join(HUD_HOST_AUTOSTART))
-            .find(|path| path.is_file());
-        let Some(entry) = installed else {
+            .find(|path| path.is_file())
+    }
+
+    pub fn hud_host_status(&self) -> ComponentStatus {
+        let Some(entry) = self.hud_host_entry() else {
             return ComponentStatus::Unavailable;
         };
         // Xfce's session settings and Plasma's autostart page write a user

@@ -335,6 +335,82 @@ fn the_package_not_myna_settings_installs_the_host() {
     }
 }
 
+/// The deb installed mid-session (issue #79): the entry starts the host only
+/// at the next login, so enabling starts it now, in the session's
+/// environment as the user manager holds it, the way Plasma runs autostart.
+#[test]
+fn an_entry_installed_since_login_starts_its_host_at_once() {
+    let session = Session::ibus("hud-start");
+    session.autostart(
+        "system",
+        "[Desktop Entry]\nType=Application\nExec=/usr/libexec/myna-config/myna-hud-host\n",
+    );
+    assert_eq!(session.hud_host(), ComponentStatus::NeedsRelogin);
+    for desktop in ["xfce", "kde"] {
+        let runner = FakeCommandRunner::scripted([ok()]);
+        let enabled = match desktop {
+            "xfce" => block_on(session.components(&runner).enable(HUD_HOST_AUTOSTART)),
+            _ => block_on(session.kde(&runner).enable(HUD_HOST_AUTOSTART)),
+        };
+        assert_eq!(enabled, Ok(()), "{desktop}");
+        assert_eq!(
+            args(&runner),
+            [[
+                "systemd-run",
+                "--user",
+                "--collect",
+                "--quiet",
+                "--unit=myna-hud-host",
+                "--",
+                "/usr/libexec/myna-config/myna-hud-host"
+            ]],
+            "{desktop}"
+        );
+    }
+
+    let runner = FakeCommandRunner::scripted([refused("Failed to start transient service unit")]);
+    let error = block_on(session.kde(&runner).enable(HUD_HOST_AUTOSTART)).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ComponentError::Failed { kind: StepKind::Command, step, message }
+                if step == "systemd-run" && message.contains("Failed to start transient service unit")
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_running_or_turned_off_host_is_not_started() {
+    let session = Session::ibus("hud-no-start");
+    session.autostart(
+        "system",
+        "[Desktop Entry]\nType=Application\nExec=/usr/libexec/myna-config/myna-hud-host\n",
+    );
+    session.run("myna-hud-host");
+    let runner = FakeCommandRunner::default();
+    assert_eq!(
+        block_on(session.kde(&runner).enable(HUD_HOST_AUTOSTART)),
+        Ok(())
+    );
+    assert!(runner.calls().is_empty());
+
+    std::fs::remove_dir_all(session.scratch.path("proc").join("myna-hud-host")).unwrap();
+    session.autostart("user", "[Desktop Entry]\nHidden=true\n");
+    let error = block_on(session.kde(&runner).enable(HUD_HOST_AUTOSTART)).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ComponentError::Failed {
+                kind: StepKind::Setting,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(runner.calls().is_empty());
+}
+
 #[test]
 fn a_component_of_another_desktop_is_unknown() {
     let session = Session::ibus("unknown");

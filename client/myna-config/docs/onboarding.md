@@ -118,9 +118,12 @@ says to install the `ibus` package, the poll finds it, and Diagnostics lists
 a problem. Settings never installs packages: a root `apt-get` in the set-up
 executor would widen the privilege surface (lock, network, a prompt whose
 message speaks of snaps) for a machine state the deb's `Recommends: ibus`
-already covers. The autostart entry is shipped by the myna-config deb and
-only read. On Plasma the input method is IBus as KWin's: kwinrc's `[Wayland]
-InputMethod` naming IBus' panel and its daemon running is satisfied; nothing
+already covers. The autostart entry is shipped by the myna-config deb, which
+Settings never installs; one installed since login would start its host only
+at the next, so the run starts it at once as a transient user unit
+(`systemd-run --user`), in the session's environment as the user manager
+holds it (issue #79). On Plasma the input method is IBus as KWin's: kwinrc's
+`[Wayland] InputMethod` naming IBus' panel and its daemon running is satisfied; nothing
 named is fixed at once with `ibus start --type kde-wayland`, so no re-login;
 fcitx5 or plasma-keyboard named (or fcitx5 running) blocks the step with a
 line saying to choose IBus, and is never switched.
