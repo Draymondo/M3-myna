@@ -728,6 +728,36 @@ async fn ordinary_field_receives_preedit_and_commit() {
 }
 
 /// 600 characters of numbered words, more than two XIM pieces' worth.
+/// IBus's Wayland input method, Plasma's, types every key an engine declines
+/// through the global engine's layout, so a named one replaced the user's for
+/// as long as a dictation ran.
+#[tokio::test]
+async fn the_engine_leaves_the_keyboard_layout_to_the_user() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let (field, mut injector) = session(0, 0).await;
+    let target = injector.acquire().await.expect("acquire an ordinary field");
+
+    let reply = field
+        .conn
+        .call_method(
+            Some(IBUS_SERVICE),
+            IBUS_PATH,
+            Some(IBUS_SERVICE),
+            "GetGlobalEngine",
+            &(),
+        )
+        .await
+        .expect("GetGlobalEngine");
+    let desc = Value::from(reply.body().deserialize::<OwnedValue>().expect("an engine"));
+    let Value::Structure(desc) = desc else {
+        panic!("not an IBusEngineDesc: {desc:?}");
+    };
+    assert_eq!(desc.fields().get(2), Some(&Value::from(MYNA_ENGINE)));
+    assert_eq!(desc.fields().get(9), Some(&Value::from("default")));
+    target.release().await;
+}
+
 fn long_text() -> String {
     (1..=120).map(|i| format!("w{i:03} ")).collect()
 }

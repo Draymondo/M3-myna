@@ -240,7 +240,7 @@ fn ibus_engine_desc() -> Value<'static> {
         "AGPL-3.0-or-later",
         "myna",
         "",
-        "us",
+        "default",
     ] {
         b = b.add_field(f.to_string());
     }
