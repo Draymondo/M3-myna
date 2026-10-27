@@ -7,7 +7,7 @@ UV=0.12.13
 UV_SHA256=745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76d05bf2623a04dd
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get install --yes --no-install-recommends libpython3-all-dev ca-certificates curl
+apt-retry install --yes --no-install-recommends libpython3-all-dev ca-certificates curl
 
 curl -fsSLo /tmp/uv.tar.gz \
   "https://github.com/astral-sh/uv/releases/download/$UV/uv-x86_64-unknown-linux-gnu.tar.gz"

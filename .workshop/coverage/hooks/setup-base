@@ -8,7 +8,7 @@
 # body as SC2317), so the gate must not depend on the distro's version.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-apt-get install --yes --no-install-recommends ca-certificates curl xz-utils
+apt-retry install --yes --no-install-recommends ca-certificates curl xz-utils
 
 GH=https://github.com
 # url sha256 path-of-the-binary-in-the-archive

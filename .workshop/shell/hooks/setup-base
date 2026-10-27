@@ -10,8 +10,8 @@
 # No GTK4/IBus/portal here: those belong to myna-desktop, which ships in a
 # core24 snap and is tested in the main workshop.
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install --yes --no-install-recommends \
+apt-retry update
+apt-retry install --yes --no-install-recommends \
   gjs \
   gnome-shell \
   dbus

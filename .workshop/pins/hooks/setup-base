@@ -27,8 +27,10 @@ DETECT
         > /etc/apt/apt.conf.d/01proxy
 fi
 
-# snapshot.ubuntu.com answers the odd 500, which failed a whole launch.
+# Acquire::Retries covers a dropped connection; apt-retry covers a 5xx, which
+# apt never retries. Every SDK installs through apt-retry.
 echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/01retries
+install -m 755 "$SDK/bin/apt-retry" /usr/local/sbin/apt-retry
 
 . /etc/os-release
 cat > /etc/apt/sources.list.d/ubuntu.sources <<SOURCES
@@ -41,5 +43,5 @@ SOURCES
 printf 'Package: *\nPin: origin snapshot.ubuntu.com\nPin-Priority: 1001\n' > /etc/apt/preferences.d/pins
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get full-upgrade --yes --allow-downgrades
+apt-retry update
+apt-retry full-upgrade --yes --allow-downgrades

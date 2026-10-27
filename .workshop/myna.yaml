@@ -269,7 +269,7 @@ actions:
       myna-snap/dev/*.sh \
       extensions/myna-shell/test/*.sh \
       tests/spread/*/*.sh \
-      .workshop/*/hooks/* \
+      .workshop/*/hooks/* .workshop/*/bin/* \
       *-snap/scripts/* *-snap/dev/*.sh \
       *-snap/snap/hooks/* \
       client/myna-config/build/*.sh \

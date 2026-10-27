@@ -20,8 +20,8 @@
 # workshop and the `shell` SDK - see .workshop/myna-shell.yaml.
 # zbus/ashpd are pure-Rust (no system -dev headers).
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install --yes --no-install-recommends \
+apt-retry update
+apt-retry install --yes --no-install-recommends \
   libgtk-4-dev \
   libadwaita-1-dev \
   libglib2.0-dev \
@@ -42,5 +42,5 @@ apt-get install --yes --no-install-recommends \
   locales
 . /etc/os-release
 if [ "$VERSION_CODENAME" != noble ]; then
-  apt-get install --yes --no-install-recommends libgtk4-layer-shell-dev sway
+  apt-retry install --yes --no-install-recommends libgtk4-layer-shell-dev sway
 fi
