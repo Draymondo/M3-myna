@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# cpu-sample.sh FILE: until killed, one line a second of how the machine's
+# CPUs spent it. run-suite.sh runs it in the VM and on the host for every
+# suite, so lost capture can be laid against time a hypervisor took from
+# the vCPUs (steal), which no guest-side priority can win back.
+#
+#   time      wall clock, as the journal's short-precise
+#   busy%     user + system time, of all CPUs
+#   steal%    time the hypervisor ran something else on our vCPUs
+#   psi-ms    CPU pressure: ms some runnable task waited for a CPU
+#   load1     the 1-minute load average
+set -u
+exec >>"$1" 2>/dev/null
+cpus=$(nproc)
+stat() { read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat; }
+psi() { sed -n 's/^some .*total=//p' /proc/pressure/cpu 2>/dev/null || echo 0; }
+stat; p_busy=$((user + nice + system + irq + softirq)) p_steal=$steal
+p_total=$((p_busy + idle + iowait + steal)) p_psi=$(psi)
+echo "time busy% steal% psi-ms load1 ($cpus CPUs)"
+while sleep 1; do
+    stat; busy=$((user + nice + system + irq + softirq))
+    total=$((busy + idle + iowait + steal)) now=$(psi)
+    span=$((total - p_total)); [ "$span" -gt 0 ] || span=1
+    echo "$(date +%T.%6N) $((100 * (busy - p_busy) / span)) $((100 * (steal - p_steal) / span))" \
+        "$(((now - p_psi) / 1000)) $(cut -d' ' -f1 /proc/loadavg)"
+    p_busy=$busy p_steal=$steal p_total=$total p_psi=$now
+done

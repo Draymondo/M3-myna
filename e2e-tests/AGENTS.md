@@ -65,6 +65,10 @@ loopback is the default microphone (`dictation` provisioning stage), and the
 fake backend snap, so the transcript is scripted. PipeWire must run realtime
 (a precondition) and no dictation may lose audio: on a loaded runner a
 SCHED_OTHER graph drops cycles, which the daemon reports as lost capture.
+Every suite's artifacts carry `out/cpu-guest.log` and `cpu-host.log`
+(`tools/cpu-sample.sh`): busy, steal and CPU pressure a second, in the VM and
+on the host. Lost capture with steal on the guest is the hypervisor taking the
+vCPUs, which no realtime priority inside the VM can win back.
 Linger starts PipeWire before the login session, when RTKit grants nothing,
 so the same stage puts `ubuntu` in the `pipewire` group, whose rlimits
 PipeWire ships. The daemon is the store's

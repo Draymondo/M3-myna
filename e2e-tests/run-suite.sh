@@ -110,9 +110,15 @@ echo "the HUD did not stop" >&2; exit 1'
     lxc file push --uid 1000 --gid 1000 --mode 0755 "$BINARY" ${HUD_HOST:+"$HUD_HOST"} "$HERE"/tools/* "$RUN/home/ubuntu/myna-shot/"
     lxc file push --uid 1000 --gid 1000 "$REPO"/client/data/glib-2.0/schemas/*.gschema.xml "$RUN/home/ubuntu/myna-shot/schemas/"
 
+    # The guest's CPU time against the host's, to lay lost capture against.
+    on_vm "$RUN" 'mkdir -p myna-shot/out'
+    lxc exec "$RUN" -- setsid -f /home/ubuntu/myna-shot/cpu-sample.sh /home/ubuntu/myna-shot/out/cpu-guest.log
+    "$HERE"/tools/cpu-sample.sh "$ARTIFACTS/cpu-host.log" & sampler=$!
+
     src=0
     VM=$RUN REL=$REL DESKTOP=$E2E_DESKTOP bash "$FILE" || src=$?
     echo "== $SUITE rc=$src"
+    kill "$sampler"
     [ $src = 0 ] || rc=1
 
     lxc file pull -r "$RUN/home/ubuntu/myna-shot/out" "$ARTIFACTS/" || true
