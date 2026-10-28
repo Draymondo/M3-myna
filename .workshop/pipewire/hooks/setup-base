@@ -9,8 +9,8 @@
 #   - ffmpeg              : FLAC decode for the corpus tier
 #                           (myna-bench download-corpus, `workshop run myna corpus`)
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install --yes --no-install-recommends \
+apt-retry update
+apt-retry install --yes --no-install-recommends \
   libpipewire-0.3-dev \
   libclang-dev \
   pkg-config \

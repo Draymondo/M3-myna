@@ -101,9 +101,13 @@ impl ApplyPreview {
         }
 
         let mut operations = Vec::new();
+        let mut prune = None;
         if let Some(app) = modelctl_app {
             if !assignments.is_empty() {
                 operations.push(modelctl_set_operation(app, assignments));
+            }
+            if model.is_some() || engine.is_some() {
+                prune = Some(modelctl_prune_operation(app));
             }
             if let Some(model) = model {
                 operations.push(modelctl_operation(app, "use-model", Some(model)));
@@ -120,6 +124,7 @@ impl ApplyPreview {
             "snap".to_owned(),
             vec!["restart".to_owned(), backend.snap_name().to_owned()],
         ));
+        operations.extend(prune);
         Ok(Self {
             backend,
             changes,
@@ -402,6 +407,16 @@ fn modelctl_operation(app: &str, selector: &str, value: Option<String>) -> Comma
     }
     arguments.extend(["--assume-yes".to_owned(), "--no-restart".to_owned()]);
     CommandRequest::new("snap".to_owned(), arguments)
+}
+
+/// Removes the components the selection no longer uses, which a switch
+/// leaves installed (#61). It runs after the restart, once the server has let
+/// go of them.
+fn modelctl_prune_operation(app: &str) -> CommandRequest {
+    CommandRequest::new(
+        "snap".to_owned(),
+        vec!["run".to_owned(), app.to_owned(), "prune-cache".to_owned()],
+    )
 }
 
 fn read_back_errors(
@@ -921,6 +936,7 @@ mod tests {
                     "--no-restart",
                 ],
                 vec!["restart", "myna-parakeet"],
+                vec!["run", "myna-parakeet.modelctl", "prune-cache"],
             ]
         );
     }

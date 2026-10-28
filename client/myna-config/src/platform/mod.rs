@@ -4,6 +4,7 @@
 //! The rest of the application names `myna-platform` contracts, never a
 //! desktop: [`Platform`] is built once from the session's [`Profile`].
 
+use std::cell::OnceCell;
 use std::future::Future;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -11,7 +12,8 @@ use std::task::{Context, Poll, Waker};
 
 use async_trait::async_trait;
 use libadwaita as adw;
-use myna_platform::activation::Activation;
+use myna_freedesktop::portal::{AccentFrom, PortalAppearance};
+use myna_platform::activation::{Activation, ActivationError};
 use myna_platform::appearance::Appearance;
 use myna_platform::components::{
     Component, ComponentError, ComponentStatus, Components, Purpose, StepKind,
@@ -22,7 +24,11 @@ use crate::onboarding::ExtensionReport;
 use crate::ports::{FailedStep, SystemConfiguratorError};
 
 pub mod appearance;
+pub mod applications;
+pub mod dbus;
 pub mod gnome;
+pub mod host;
+pub mod kde;
 pub mod xfce;
 
 /// The backends of one desktop, as Settings uses them.
@@ -30,7 +36,8 @@ pub struct Platform {
     profile: Profile,
     activation: Option<Rc<dyn Activation>>,
     components: Rc<dyn Components>,
-    appearance: Rc<dyn Appearance>,
+    /// Built on first use: it asks the settings portal.
+    appearance: OnceCell<Rc<dyn Appearance>>,
 }
 
 impl Platform {
@@ -44,31 +51,20 @@ impl Platform {
                     Rc::new(gnome::components::GnomeComponents::new()),
                 ),
                 Profile::Xfce => (
-                    xfce::activation::XfconfActivation::open()
-                        .map(|activation| Rc::new(activation) as Rc<dyn Activation>)
-                        .map_err(|error| {
-                            gio::glib::g_warning!(crate::LOG_DOMAIN, "no Xfce shortcuts: {error}")
-                        })
-                        .ok(),
-                    Rc::new(xfce::components::XfceComponents::new(Arc::new(
-                        crate::command::GioCommandRunner,
-                    ))),
+                    opened(xfce::activation::XfconfActivation::open()),
+                    Rc::new(xfce::components::XfceComponents::new(commands())),
+                ),
+                Profile::Kde => (
+                    opened(kde::activation::KglobalaccelActivation::open()),
+                    Rc::new(kde::components::KdeComponents::new(commands())),
                 ),
                 Profile::Generic => (None, Rc::new(NoComponents)),
             };
-        let appearance: Rc<dyn Appearance> = match profile {
-            Profile::Gnome => Rc::new(gnome::appearance::GnomeAppearance),
-            Profile::Xfce => Rc::new(match xfce::xfconf::Xfconf::session("xsettings") {
-                Ok(xfconf) => appearance::GtkAppearance::with_xfconf(xfconf),
-                Err(_) => appearance::GtkAppearance::default(),
-            }),
-            Profile::Generic => Rc::new(appearance::GtkAppearance::default()),
-        };
         Self {
             profile,
             activation,
             components,
-            appearance,
+            appearance: OnceCell::new(),
         }
     }
 
@@ -100,9 +96,24 @@ impl Platform {
         self.activation.clone()
     }
 
-    /// The desktop's reduced-motion and high-contrast preferences.
+    /// The desktop's reduced-motion and high-contrast preferences: the
+    /// settings portal's, and what GTK (and xfconf on Xfce) says where it
+    /// states none.
     pub fn appearance(&self) -> Rc<dyn Appearance> {
-        self.appearance.clone()
+        self.appearance
+            .get_or_init(|| {
+                let gtk: Rc<dyn Appearance> = match self.profile {
+                    Profile::Xfce => Rc::new(match xfce::xfconf::Xfconf::session("xsettings") {
+                        Ok(xfconf) => appearance::GtkAppearance::with_xfconf(xfconf),
+                        Err(_) => appearance::GtkAppearance::default(),
+                    }),
+                    Profile::Gnome | Profile::Kde | Profile::Generic => {
+                        Rc::new(appearance::GtkAppearance::default())
+                    }
+                };
+                PortalAppearance::session(gtk, AccentFrom::Portal)
+            })
+            .clone()
     }
 
     /// The colour scheme libadwaita should take. On GNOME its settings portal
@@ -111,10 +122,12 @@ impl Platform {
     pub fn color_scheme(&self) -> adw::ColorScheme {
         match self.profile {
             Profile::Gnome => adw::ColorScheme::Default,
-            Profile::Xfce | Profile::Generic if self.appearance.read().prefers_dark => {
+            Profile::Xfce | Profile::Kde | Profile::Generic
+                if self.appearance().read().prefers_dark =>
+            {
                 adw::ColorScheme::ForceDark
             }
-            Profile::Xfce | Profile::Generic => adw::ColorScheme::Default,
+            Profile::Xfce | Profile::Kde | Profile::Generic => adw::ColorScheme::Default,
         }
     }
 
@@ -166,6 +179,20 @@ pub struct DesktopDiagnostics {
     pub shell: Option<String>,
     pub extension: Option<ExtensionReport>,
     pub components: Vec<ComponentFact>,
+}
+
+fn commands() -> Arc<dyn crate::command::CommandRunner> {
+    Arc::new(crate::command::GioCommandRunner)
+}
+
+/// A backend that could not reach its desktop is reported and left out.
+fn opened(
+    activation: Result<impl Activation + 'static, ActivationError>,
+) -> Option<Rc<dyn Activation>> {
+    activation
+        .map(|activation| Rc::new(activation) as Rc<dyn Activation>)
+        .map_err(|error| gio::glib::g_warning!(crate::LOG_DOMAIN, "no desktop shortcuts: {error}"))
+        .ok()
 }
 
 /// A desktop Myna knows nothing about needs nothing from it.
@@ -291,6 +318,33 @@ mod tests {
     }
 
     #[test]
+    fn plasma_needs_ibus_as_kwins_input_method_and_the_hud_host() {
+        let platform = Platform::for_profile(Profile::Kde);
+        let required = platform.components().required();
+        let purposes = [Purpose::TextInput, Purpose::StatusSurface];
+        assert_eq!(
+            required
+                .iter()
+                .map(|c| (c.id.as_str(), c.purpose))
+                .collect::<Vec<_>>(),
+            [host::IBUS, host::HUD_HOST_AUTOSTART]
+                .into_iter()
+                .zip(purposes)
+                .collect::<Vec<_>>()
+        );
+        let diagnostics = platform.diagnostics();
+        assert_eq!(diagnostics.shell, None);
+        assert_eq!(
+            diagnostics
+                .components
+                .iter()
+                .map(|c| c.purpose)
+                .collect::<Vec<_>>(),
+            purposes
+        );
+    }
+
+    #[test]
     fn a_dark_theme_darkens_settings_except_where_gnome_drives_it() {
         use gtk4 as gtk;
         crate::ui::on_gtk_thread(|| {
@@ -300,6 +354,7 @@ mod tests {
             let scheme = |profile| Platform::for_profile(profile).color_scheme();
             settings.set_gtk_theme_name(Some("Greybird-dark"));
             assert_eq!(scheme(Profile::Generic), adw::ColorScheme::ForceDark);
+            assert_eq!(scheme(Profile::Kde), adw::ColorScheme::ForceDark);
             assert_eq!(scheme(Profile::Gnome), adw::ColorScheme::Default);
             settings.set_gtk_theme_name(Some("Greybird"));
             assert_eq!(scheme(Profile::Generic), adw::ColorScheme::Default);
@@ -308,10 +363,12 @@ mod tests {
 
     #[test]
     fn a_profile_named_by_nothing_known_is_the_generic_one() {
-        let env = SessionEnv::from_vars(|name| (name == "MYNA_PLATFORM").then(|| "kde".to_owned()));
-        assert_eq!(Platform::select(&env).profile(), Profile::Generic);
         let env =
-            SessionEnv::from_vars(|name| (name == "XDG_CURRENT_DESKTOP").then(|| "KDE".to_owned()));
+            SessionEnv::from_vars(|name| (name == "MYNA_PLATFORM").then(|| "cinnamon".to_owned()));
+        assert_eq!(Platform::select(&env).profile(), Profile::Generic);
+        let env = SessionEnv::from_vars(|name| {
+            (name == "XDG_CURRENT_DESKTOP").then(|| "X-Cinnamon".to_owned())
+        });
         assert_eq!(Platform::select(&env).profile(), Profile::Generic);
     }
 }

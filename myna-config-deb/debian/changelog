@@ -1,3 +1,21 @@
+myna-config (0.3.0-0ubuntu1) stonking; urgency=medium
+
+  * KDE Plasma 6 is supported. Myna Settings sets up IBus as KWin's
+    input method and binds the dictation key, and the pill shows on
+    Plasma's Wayland session (#65, #79).
+  * Notifications no longer pile up on Plasma (#70).
+  * Long dictations into Wine and CrossOver applications are no longer
+    cut off (#73).
+  * Choosing a model while it is still installing no longer leaves Myna
+    with no model (#51).
+  * Myna Settings works when your shell is not listed in /etc/shells
+    (#74).
+  * Dictation ends cleanly when another input method takes over, and
+    Myna claims IBus back at the next dictation.
+  * The pill follows the desktop's accent colour and animation settings.
+
+ -- Charles <charles05@canonical.com>  Mon, 26 Oct 2026 09:36:17 +0000
+
 myna-config (0.2.4-0ubuntu1) stonking; urgency=medium
 
   * Myna runs on 64-bit Arm (arm64): Myna Settings from the PPA and

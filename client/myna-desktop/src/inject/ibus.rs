@@ -22,7 +22,7 @@
 //! against a live IBus daemon with a focused input context, so it is proven by
 //! the env-gated suite (`MYNA_IBUS_TESTS=1`, `tests/ibus_hw.rs`, T017) and the
 //! manual spoken run (T021) — on the desktop VM and on hardware unchanged
-//! (Principle II). Activating the engine must never be done casually: it becomes
+//! Activating the engine must never be done casually: it becomes
 //! the user's global input method until restored.
 
 use std::collections::HashMap;
@@ -63,6 +63,16 @@ const FAKE_CLIENT: &str = "fake";
 /// a preedit attribute list GJS frees twice, which crashes the Shell (#18), so
 /// its preedit goes out with no attributes.
 const SHELL_CLIENT: &str = "gnome-shell";
+
+/// The client string of ibus-x11's input contexts: X11 applications that take
+/// text over XIM, Wine among them (#73).
+const XIM_CLIENT: &str = "xim";
+
+/// The most UTF-16 units one commit to an XIM client carries. Wine hands each
+/// commit to the application as one IME result string, and Windows
+/// applications read it into fixed buffers: Qt's holds 256 units and drops
+/// the rest without error. One unit short leaves room for a terminator.
+const XIM_COMMIT_UNITS: usize = 255;
 
 /// How far apart a `FocusOut` and an activation may be to belong together. A
 /// global key grab on X11 sends the focused window FocusOut on the key's
@@ -230,7 +240,7 @@ fn ibus_engine_desc() -> Value<'static> {
         "AGPL-3.0-or-later",
         "myna",
         "",
-        "us",
+        "default",
     ] {
         b = b.add_field(f.to_string());
     }
@@ -751,6 +761,9 @@ struct EngineState {
     /// carries no attributes ([`SHELL_CLIENT`]). Focus on any other field ends
     /// the lease, so this is the client of the field a lease writes to.
     shell_focused: AtomicBool,
+    /// Whether the last field focused by name is an XIM client's, whose
+    /// commits are split ([`XIM_COMMIT_UNITS`]).
+    xim_focused: AtomicBool,
 }
 
 impl EngineState {
@@ -770,6 +783,7 @@ impl EngineState {
             runtime: tokio::runtime::Handle::try_current().ok(),
             displaced: watch::Sender::new(None),
             shell_focused: AtomicBool::new(false),
+            xim_focused: AtomicBool::new(false),
         }
     }
 
@@ -793,9 +807,12 @@ impl EngineState {
 
     fn focus(self: &Arc<Self>, change: FocusChange<'_>) {
         match change {
-            FocusChange::In(Some(ctx)) if !ctx.is_fake() => self
-                .shell_focused
-                .store(ctx.client == SHELL_CLIENT, Ordering::Relaxed),
+            FocusChange::In(Some(ctx)) if !ctx.is_fake() => {
+                self.shell_focused
+                    .store(ctx.client == SHELL_CLIENT, Ordering::Relaxed);
+                self.xim_focused
+                    .store(ctx.client == XIM_CLIENT, Ordering::Relaxed);
+            }
             _ => {}
         }
         let blip = self.next_blip.fetch_add(1, Ordering::Relaxed);
@@ -945,6 +962,22 @@ impl EngineState {
         retired
     }
 
+    /// Another engine is global while lease `id` writes: on GNOME, the Shell
+    /// re-applying its input source after IBus restarts, or the user picking
+    /// another. The daemon tells our engine no more than a focus blip would,
+    /// so this is found by asking it. The lease ends, and so does the restore
+    /// the connection owed, which would undo that choice.
+    fn taken(&self, id: u64) {
+        self.lease.send_if_modified(|lease| {
+            let held = lease.held_by(id);
+            if held {
+                lease.binding = Binding::Lost;
+            }
+            held
+        });
+        self.displaced.send_replace(None);
+    }
+
     /// Record the engine an activation displaces, `current` being what
     /// `GetGlobalEngine` named just before the switch. Ours means an earlier
     /// activation is still standing: what it displaced is what the user is
@@ -1027,6 +1060,40 @@ impl EngineState {
     fn preedit_hint(&self) -> bool {
         !self.shell_focused.load(Ordering::Relaxed)
     }
+
+    /// The most UTF-16 units one commit to the focused field may carry.
+    fn commit_limit(&self) -> Option<usize> {
+        self.xim_focused
+            .load(Ordering::Relaxed)
+            .then_some(XIM_COMMIT_UNITS)
+    }
+}
+
+/// `text` in pieces of at most `limit` UTF-16 units, each ending after its
+/// last whitespace when it has one, so no word is split across commits.
+fn commit_pieces(text: &str, limit: usize) -> Vec<&str> {
+    let mut pieces = Vec::new();
+    let mut rest = text;
+    while rest.encode_utf16().count() > limit {
+        let mut units = 0;
+        let mut cut = 0;
+        let mut after_space = None;
+        for (i, c) in rest.char_indices() {
+            units += c.len_utf16();
+            if units > limit {
+                break;
+            }
+            cut = i + c.len_utf8();
+            if c.is_whitespace() {
+                after_space = Some(cut);
+            }
+        }
+        let cut = after_space.unwrap_or(cut);
+        pieces.push(&rest[..cut]);
+        rest = &rest[cut..];
+    }
+    pieces.push(rest);
+    pieces
 }
 
 /// What [`IbusInjector::activation`] hands out: it marks whatever lease is
@@ -1192,11 +1259,27 @@ async fn call(
     .map_err(|e| classify(member, e))
 }
 
+/// The global engine's name, `None` where the daemon names none, which it
+/// answers with an error. Only a lost connection is an error here.
+async fn global_engine_of(conn: &Connection) -> Result<Option<String>, InjectError> {
+    let msg = match call(conn, "GetGlobalEngine", &()).await {
+        Ok(msg) => msg,
+        Err(InjectError::Backend(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let Ok(Value::Structure(desc)) = msg.body().deserialize::<OwnedValue>().map(Value::from) else {
+        return Ok(None);
+    };
+    Ok(match desc.fields().get(2) {
+        Some(Value::Str(name)) => Some(name.to_string()),
+        _ => None,
+    })
+}
+
 /// IBus engine-over-`zbus` injector (the shipped backend).
 pub struct IbusInjector {
     conn: Connection,
     state: Arc<EngineState>,
-    objects_served: bool,
 }
 
 impl IbusInjector {
@@ -1209,55 +1292,36 @@ impl IbusInjector {
     /// Connect to the IBus daemon at `address`, as `connect` does to the
     /// session's.
     pub async fn connect_to(address: Address) -> Result<Self, InjectError> {
+        let state = Arc::new(EngineState::new());
+        // Served by the builder, which returns only once the object server
+        // listens: `ObjectServer::at` returns before, and a `CreateEngine`
+        // arriving in between is dropped unanswered.
         let conn = zbus::conn::Builder::address(address)
             .map_err(|e| InjectError::Unavailable(format!("bad IBus address: {e}")))?
+            .serve_at(FACTORY_PATH, FactoryObject)
+            .and_then(|b| {
+                b.serve_at(
+                    ENGINE_PATH,
+                    EngineObject {
+                        state: state.clone(),
+                    },
+                )
+            })
+            .map_err(|e| InjectError::Backend(format!("serve engine: {e}")))?
             .build()
             .await
             .map_err(|e| InjectError::Unavailable(format!("cannot connect to IBus: {e}")))?;
-        Ok(Self {
-            conn,
-            state: Arc::new(EngineState::new()),
-            objects_served: false,
-        })
+        Ok(Self { conn, state })
     }
 
     /// Read the currently active global engine's name (to restore later).
     async fn global_engine_name(&self) -> Option<String> {
-        let msg = call(&self.conn, "GetGlobalEngine", &()).await.ok()?;
-        let v: OwnedValue = msg.body().deserialize().ok()?;
-        if let Value::Structure(s) = Value::from(v) {
-            if let Some(Value::Str(name)) = s.fields().get(2) {
-                return Some(name.to_string());
-            }
-        }
-        None
+        global_engine_of(&self.conn).await.ok().flatten()
     }
 
     /// The active global engine's name (read-only; for tests/diagnostics).
     pub async fn global_engine(&self) -> Option<String> {
         self.global_engine_name().await
-    }
-
-    async fn serve_objects(&mut self) -> Result<(), InjectError> {
-        if self.objects_served {
-            return Ok(());
-        }
-        let server = self.conn.object_server();
-        server
-            .at(FACTORY_PATH, FactoryObject)
-            .await
-            .map_err(|e| InjectError::Backend(format!("serve factory: {e}")))?;
-        server
-            .at(
-                ENGINE_PATH,
-                EngineObject {
-                    state: self.state.clone(),
-                },
-            )
-            .await
-            .map_err(|e| InjectError::Backend(format!("serve engine: {e}")))?;
-        self.objects_served = true;
-        Ok(())
     }
 }
 
@@ -1270,17 +1334,14 @@ pub const CAPABILITIES: TextInputCapabilities = TextInputCapabilities {
     secure_field_detection: Support::Supported,
 };
 
-#[async_trait]
-impl Injector for IbusInjector {
-    /// Acquiring switches the global engine to ours. The rollback on error
-    /// can only restore an input method the connection was able to read.
-    async fn acquire(&mut self) -> Result<Box<dyn Target>, InjectError> {
-        // Read before the switch; recorded once it has succeeded.
-        let displaced = self.global_engine_name().await;
-
-        // Register our component + serve the factory/engine, then become active.
-        call(&self.conn, "RegisterComponent", &(ibus_component(),)).await?;
-        self.serve_objects().await?;
+impl IbusInjector {
+    /// Make our engine global under a new lease, recording `displaced` as the
+    /// engine to restore once that succeeds, and wait for the daemon to focus
+    /// it. Whether the focus came is the second value.
+    async fn switch(
+        &self,
+        displaced: Option<String>,
+    ) -> Result<(Box<IbusTarget>, bool), InjectError> {
         self.state.content_type.send_replace(ContentType::default());
         // Before the switch, which focuses the engine before it returns.
         let lease = self.state.mint();
@@ -1304,6 +1365,111 @@ impl Injector for IbusInjector {
         if focus_received {
             tokio::time::sleep(CONTENT_TYPE_GRACE).await;
         }
+        Ok((target, focus_received))
+    }
+
+    /// The global engine once it is no longer `before`, or after
+    /// `FOCUS_WAIT`. The daemon cancels a switch as soon as a newer one
+    /// arrives, but names the newer one's engine only once that is done.
+    async fn switched_since(&self, before: Option<&str>) -> Option<String> {
+        let deadline = tokio::time::Instant::now() + FOCUS_WAIT;
+        loop {
+            let now = self.global_engine_name().await;
+            if now.as_deref() != before || tokio::time::Instant::now() >= deadline {
+                return now;
+            }
+            tokio::time::sleep(SWITCH_POLL).await;
+        }
+    }
+}
+
+/// How often a failed switch asks whether another engine is landing.
+const SWITCH_POLL: Duration = Duration::from_millis(10);
+
+/// How many times an acquire makes our engine global: the first switch and
+/// one claim back.
+const SWITCHES: u32 = 2;
+
+/// How an acquire's switch to our engine went.
+#[derive(Debug, Clone, Copy)]
+enum Switched<'a> {
+    Answered,
+    /// The daemon failed it; `before` was global before the press.
+    Failed {
+        before: Option<&'a str>,
+    },
+}
+
+/// Whether an acquire switches to our engine again, its `switch`th switch
+/// (from 1) having left `now` global. Before capture starts the taker is
+/// nearly always GNOME Shell re-applying its source to a new IBus daemon, so
+/// the engine is claimed back, once: an engine that keeps taking it wins. A
+/// failed switch counts only when another engine became global since, which
+/// is how the daemon cancels a switch for a newer one.
+fn reclaims(switch: u32, switched: Switched<'_>, now: Option<&str>) -> bool {
+    let Some(now) = now.filter(|now| !now.is_empty() && *now != ENGINE_NAME) else {
+        return false;
+    };
+    switch < SWITCHES
+        && match switched {
+            Switched::Answered => true,
+            Switched::Failed { before } => before != Some(now),
+        }
+}
+
+#[async_trait]
+impl Injector for IbusInjector {
+    /// Acquiring switches the global engine to ours. The rollback on error
+    /// can only restore an input method the connection was able to read.
+    async fn acquire(&mut self) -> Result<Box<dyn Target>, InjectError> {
+        // Read before the switch; recorded once it has succeeded.
+        let before = self.global_engine_name().await;
+
+        call(&self.conn, "RegisterComponent", &(ibus_component(),)).await?;
+        let mut displaced = before.clone();
+        let mut switch = 1;
+        let (target, focus_received) = loop {
+            // The switch answering is no proof it stuck: an engine made global
+            // just after it, by the Shell or the user, wins without failing it.
+            let (taker, error) = match self.switch(displaced.clone()).await {
+                Ok((target, focus_received)) => match global_engine_of(&self.conn).await {
+                    Ok(Some(name)) if name == ENGINE_NAME => break (target, focus_received),
+                    Ok(now) if reclaims(switch, Switched::Answered, now.as_deref()) => {
+                        self.state.taken(target.lease);
+                        (now, None)
+                    }
+                    Ok(now) => {
+                        myna_core::dbg_log!(
+                            "inject",
+                            "acquire refused: the global engine is {now:?}"
+                        );
+                        target.release().await;
+                        return Err(InjectError::FocusLost);
+                    }
+                    Err(err) => {
+                        target.release().await;
+                        return Err(err);
+                    }
+                },
+                Err(err) => {
+                    let now = self.switched_since(before.as_deref()).await;
+                    let failed = Switched::Failed {
+                        before: before.as_deref(),
+                    };
+                    if !reclaims(switch, failed, now.as_deref()) {
+                        return Err(err);
+                    }
+                    (now, Some(err))
+                }
+            };
+            myna_core::dbg_log!(
+                "inject",
+                "acquire: {taker:?} took the global engine ({error:?}); claiming it back"
+            );
+            displaced = taker;
+            switch += 1;
+        };
+        let lease = target.lease;
 
         if self.state.on_fake(lease) {
             myna_core::dbg_log!("inject", "acquire refused: no field took focus back");
@@ -1384,6 +1550,24 @@ impl IbusTarget {
 }
 
 impl IbusTarget {
+    /// Whether another engine took the global one from us, which ends the
+    /// lease. An engine the daemon cannot name is taken as still ours.
+    async fn taken(&mut self) -> Result<bool, InjectError> {
+        match global_engine_of(&self.conn).await? {
+            Some(name) if name != ENGINE_NAME => {
+                myna_core::dbg_log!(
+                    "inject",
+                    "IBus global engine is now {name:?}: ours was taken"
+                );
+                self.state.taken(self.lease);
+                self.held.clear();
+                self.held_preedit = None;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// Where this target stands for a write, holding `text` while that is
     /// unsure. Emitted while focus is away, it would reach the fake context.
     async fn standing(&mut self, held: Option<&str>, preedit: bool) -> Standing {
@@ -1432,9 +1616,18 @@ impl IbusTarget {
             return Err(InjectError::SecureField);
         }
         self.state.wrote(self.lease);
-        self.emit("CommitText", &(ibus_text(text),))
-            .await
-            .map_err(|e| classify("CommitText", e))
+        // One commit elsewhere: mutter keeps only the last of back-to-back
+        // commits (mutter#5087), and XIM never reaches mutter's text-input.
+        let pieces = match self.state.commit_limit() {
+            Some(limit) => commit_pieces(text, limit),
+            None => vec![text],
+        };
+        for piece in pieces {
+            self.emit("CommitText", &(ibus_text(piece),))
+                .await
+                .map_err(|e| classify("CommitText", e))?;
+        }
+        Ok(())
     }
 
     async fn show_preedit(&mut self, text: &str) {
@@ -1481,6 +1674,11 @@ impl IbusTarget {
 #[async_trait]
 impl Target for IbusTarget {
     async fn commit(&mut self, text: &str) -> Result<(), InjectError> {
+        // Before anything is held: held text would otherwise wait out a focus
+        // blip that never ends.
+        if self.taken().await? {
+            return Err(InjectError::FocusLost);
+        }
         match self.standing(Some(text), false).await {
             Standing::Unsure => return Ok(()),
             Standing::Lost => {
@@ -1518,6 +1716,8 @@ impl Target for IbusTarget {
     /// Clears the preedit and restores the input method the engine switch
     /// displaced, unless a newer lease superseded this one.
     async fn release(mut self: Box<Self>) {
+        // An engine taken is owed nothing, neither held text nor a restore.
+        let _ = self.taken().await;
         // A blip under way decides whether what it held lands.
         if self.state.standing(self.lease, true).await == Standing::Held {
             let _ = self.flush().await;
@@ -1643,6 +1843,46 @@ mod tests {
         assert!(!state.preedit_hint(), "still GNOME Shell's field");
         focus_in(&state, "/org/freedesktop/IBus/InputContext_3", "gtk3-im");
         assert!(state.preedit_hint());
+    }
+
+    /// #73: only an XIM client's commits are split, and the daemon's fake
+    /// context or an unnamed focus changes nothing.
+    #[test]
+    fn commit_limit_follows_the_focused_client() {
+        let state = engine_state();
+        assert_eq!(state.commit_limit(), None, "no field named yet");
+        focus_in(&state, "/org/freedesktop/IBus/InputContext_2", XIM_CLIENT);
+        assert_eq!(state.commit_limit(), Some(XIM_COMMIT_UNITS));
+        focus_in(&state, "/org/freedesktop/IBus/InputContext_1", FAKE_CLIENT);
+        state.focus(FocusChange::In(None));
+        state.focus(FocusChange::Out(None));
+        assert_eq!(
+            state.commit_limit(),
+            Some(XIM_COMMIT_UNITS),
+            "still the XIM field"
+        );
+        focus_in(&state, "/org/freedesktop/IBus/InputContext_3", SHELL_CLIENT);
+        assert_eq!(state.commit_limit(), None);
+    }
+
+    #[test]
+    fn commit_pieces_end_after_the_last_space_that_fits() {
+        assert_eq!(commit_pieces("ab cd ef", 6), ["ab cd ", "ef"]);
+        assert_eq!(commit_pieces("ab cd", 5), ["ab cd"], "fits whole");
+        assert_eq!(commit_pieces("", 5), [""]);
+    }
+
+    #[test]
+    fn commit_pieces_cut_a_word_longer_than_the_limit() {
+        assert_eq!(commit_pieces("abcdefg", 3), ["abc", "def", "g"]);
+    }
+
+    /// The limit counts UTF-16 units, as Windows does, and never splits a
+    /// character: `𝄞` is one character in two units.
+    #[test]
+    fn commit_pieces_count_utf16_units_whole_characters() {
+        assert_eq!(commit_pieces("é𝄞x", 3), ["é𝄞", "x"]);
+        assert_eq!(commit_pieces("ab𝄞", 3), ["ab", "𝄞"]);
     }
 
     fn engine(state: &Arc<EngineState>) -> EngineObject {
@@ -2130,6 +2370,66 @@ mod tests {
         state.displace(Some(USER_ENGINE.into()));
         assert_eq!(state.reclaim(Retired::Superseded), None);
         assert_eq!(state.reclaim(Retired::Held).as_deref(), Some(USER_ENGINE));
+    }
+
+    /// Another engine found global ends the lease at once, reports the loss,
+    /// and leaves no restore to undo the user's choice with.
+    #[tokio::test]
+    async fn an_engine_taken_ends_the_lease_and_its_restore() {
+        let state = engine_state();
+        let lease = state.mint();
+        state.displace(Some(USER_ENGINE.into()));
+        let mut loss = state.loss(lease);
+        state.taken(lease);
+        assert!(!state.holds(lease));
+        assert_eq!(loss.next().now_or_never(), Some(Some(FocusEvent::FocusOut)));
+        assert_eq!(state.reclaim(state.retire(lease)), None);
+    }
+
+    /// Found by a superseded target, it still cancels the restore: the
+    /// engine is no longer the live target's either.
+    #[test]
+    fn an_engine_taken_from_a_superseded_lease_cancels_the_restore() {
+        let state = engine_state();
+        let old = state.mint();
+        state.displace(Some(USER_ENGINE.into()));
+        let live = state.mint();
+        state.taken(old);
+        assert!(
+            state.holds(live),
+            "the live lease learns of it at its own check"
+        );
+        assert_eq!(state.reclaim(state.retire(live)), None);
+    }
+
+    /// An engine made global over the first switch is claimed back once;
+    /// one that takes it again wins. A failed switch is retried only when
+    /// another engine became global since.
+    #[test]
+    fn an_acquire_claims_the_engine_back_once() {
+        const SHELL: Option<&str> = Some(USER_ENGINE);
+        let fresh = Switched::Failed { before: None };
+        let same = Switched::Failed { before: SHELL };
+        assert!(
+            reclaims(1, Switched::Answered, SHELL),
+            "taken over the switch"
+        );
+        assert!(
+            !reclaims(2, Switched::Answered, SHELL),
+            "taken over the claim back"
+        );
+        assert!(
+            !reclaims(1, Switched::Answered, None),
+            "no engine named is no taker"
+        );
+        assert!(!reclaims(1, Switched::Answered, Some(ENGINE_NAME)));
+        assert!(!reclaims(1, Switched::Answered, Some("")));
+        assert!(
+            reclaims(1, fresh, SHELL),
+            "cancelled for the Shell's switch"
+        );
+        assert!(!reclaims(1, same, SHELL), "failed with nothing taken");
+        assert!(!reclaims(2, fresh, SHELL));
     }
 
     const APP: &str = "gtk4-im:mousepad";

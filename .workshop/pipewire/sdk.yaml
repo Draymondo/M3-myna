@@ -6,7 +6,7 @@
 # (pw-cli / wpctl) are used for device inspection and to stand up the
 # virtual-audio graph (null-sink / pw-loopback) that the env-gated integration
 # suite (MYNA_PIPEWIRE_TESTS=1) captures from — so the tests run without
-# physical hardware (Principle II) and unchanged on real hardware.
+# physical hardware and unchanged on real hardware.
 #
 # System packages are installed by the setup-base hook (hooks/setup-base, runs
 # as root at install). The host-sound custom-device plug below is optional and

@@ -9,33 +9,118 @@
 //!
 //! Notifications never take input focus, so this is safe on Wayland where a
 //! toplevel overlay is not. It carries state labels only, never transcript text
-//! (privacy, N8). The richer always-on-top overlay is the myna-shell overlay
-//! (feature 004).
+//! (privacy, N8).
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use gettextrs::gettext;
-use notify_rust::{Hint, Notification, Timeout, Urgency};
+use tokio::sync::OnceCell;
+use zbus::zvariant::Value;
 
 use super::{Indicator, IndicatorState};
 
 /// App name shown on every toast (`appname` field, not the `summary`).
 const APP_NAME: &str = "Myna";
 
-/// A `notify-rust`-backed indicator: one updating toast per dictation session.
+#[zbus::proxy(
+    interface = "org.freedesktop.Notifications",
+    default_service = "org.freedesktop.Notifications",
+    default_path = "/org/freedesktop/Notifications",
+    gen_blocking = false
+)]
+trait Notifications {
+    #[allow(clippy::too_many_arguments)]
+    fn notify(
+        &self,
+        app_name: &str,
+        replaces_id: u32,
+        app_icon: &str,
+        summary: &str,
+        body: &str,
+        actions: &[&str],
+        hints: HashMap<&str, Value<'_>>,
+        expire_timeout: i32,
+    ) -> zbus::Result<u32>;
+
+    fn close_notification(&self, id: u32) -> zbus::Result<()>;
+}
+
+/// The notification server, as far as a toast needs it.
+#[async_trait]
+trait Toasts: Send + Sync {
+    /// Show a toast, replacing `replaces` when non-zero; returns its id.
+    async fn notify(&self, replaces: u32, text: &Text, critical: bool) -> zbus::Result<u32>;
+    async fn close(&self, id: u32);
+}
+
+/// A toast's summary and body.
+type Text = (String, String);
+
+/// `org.freedesktop.Notifications` on the session bus, connected on first use.
 #[derive(Default)]
+struct SessionToasts(OnceCell<NotificationsProxy<'static>>);
+
+impl SessionToasts {
+    async fn proxy(&self) -> zbus::Result<&NotificationsProxy<'static>> {
+        self.0
+            .get_or_try_init(|| async {
+                NotificationsProxy::builder(&zbus::Connection::session().await?)
+                    .cache_properties(zbus::proxy::CacheProperties::No)
+                    .build()
+                    .await
+            })
+            .await
+    }
+}
+
+#[async_trait]
+impl Toasts for SessionToasts {
+    async fn notify(&self, replaces: u32, text: &Text, critical: bool) -> zbus::Result<u32> {
+        let hints = HashMap::from([
+            // Normal, not Low: GNOME Shell drops low-urgency toasts straight
+            // into the tray without a banner.
+            ("urgency", Value::U8(if critical { 2 } else { 1 })),
+            // Keep dictation liveness out of the notification history.
+            ("transient", Value::Bool(true)),
+        ]);
+        // `expire_timeout` 0 is never: servers do not reliably honour one, so
+        // notices are closed by `schedule_auto_hide`.
+        let (summary, body) = text;
+        self.proxy()
+            .await?
+            .notify(APP_NAME, replaces, "", summary, body, &[], hints, 0)
+            .await
+    }
+
+    async fn close(&self, id: u32) {
+        if let Ok(proxy) = self.proxy().await {
+            let _ = proxy.close_notification(id).await;
+        }
+    }
+}
+
+/// One updating toast per dictation session.
 pub struct NotifyIndicator {
-    /// The live notification's id, so state changes *replace* it rather than
-    /// stack a new toast each transition. Cleared on `Hidden`.
-    id: Option<u32>,
-    /// Pending auto-hide task for an error notice. Freedesktop `Timeout` is
-    /// not reliably honored by daemons, so we `close()` ourselves after the
-    /// dynamic hold.
+    toasts: Arc<dyn Toasts>,
+    /// The live toast: its id, so state changes *replace* it rather than
+    /// stack a new toast each transition, and its text. Cleared on `Hidden`.
+    live: Option<(u32, Text)>,
+    /// Pending auto-hide task for a notice.
     pending_hide: Option<tokio::task::JoinHandle<()>>,
+    hold_ms_for: fn(&str) -> u64,
+}
+
+impl Default for NotifyIndicator {
+    fn default() -> Self {
+        Self::with(Arc::new(SessionToasts::default()), hold_ms_for)
+    }
 }
 
 /// The notification-specific summary + body for a state (labels only — never
 /// transcript text). `None` means "close the toast" (`Hidden`).
-fn toast_text(state: &IndicatorState) -> Option<(String, String)> {
+fn toast_text(state: &IndicatorState) -> Option<Text> {
     match state {
         IndicatorState::Hidden => None,
         IndicatorState::Recording => Some((
@@ -56,62 +141,46 @@ fn toast_text(state: &IndicatorState) -> Option<(String, String)> {
     }
 }
 
+/// Dynamic hold for a notice body, mirroring HUD `hold_ms_for` but
+/// slower reading than server (60 ms/char, ≥8000, ≤15000). Only
+/// `notice` (recoverable) auto-dismisses locally; `error` stays.
+/// Server auto-dismisses `notice` after `server_hold_ms_for` (48 ms/char,
+/// ≥6000); client keeps showing, ignoring server `idle` until this timer.
+fn hold_ms_for(body: &str) -> u64 {
+    let len = body.chars().count() as f64;
+    const PER_CHAR_MS: f64 = 60.0;
+    const MIN_MS: f64 = 8000.0;
+    const MAX_MS: f64 = 15_000.0;
+    (len * PER_CHAR_MS).clamp(MIN_MS, MAX_MS) as u64
+}
+
 impl NotifyIndicator {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Dynamic hold for a notice body, mirroring HUD `hold_ms_for` but
-    /// slower reading than server (60 ms/char, ≥8000, ≤15000). Only
-    /// `notice` (recoverable) auto-dismisses locally; `error` stays.
-    /// Server auto-dismisses `notice` after `server_hold_ms_for` (48 ms/char,
-    /// ≥6000); client keeps showing, ignoring server `idle` until this timer.
-    fn hold_ms_for(body: &str) -> u64 {
-        let len = body.chars().count() as f64;
-        const PER_CHAR_MS: f64 = 60.0;
-        const MIN_MS: f64 = 8000.0;
-        const MAX_MS: f64 = 15_000.0;
-        (len * PER_CHAR_MS).clamp(MIN_MS, MAX_MS) as u64
+    fn with(toasts: Arc<dyn Toasts>, hold_ms_for: fn(&str) -> u64) -> Self {
+        Self {
+            toasts,
+            live: None,
+            pending_hide: None,
+            hold_ms_for,
+        }
     }
 
-    /// Show or replace the lifecycle toast, returning the (possibly new)
-    /// notification id. Runs the blocking D-Bus round-trip off the runtime.
-    /// Freedesktop `Timeout` is not reliably honored, so we always use
-    /// `Timeout::Never` and close ourselves after `hold_ms_for` for errors.
-    async fn show(&self, summary: String, body: String, error: bool) -> Option<u32> {
-        let id = self.id;
-        tokio::task::spawn_blocking(move || {
-            let mut n = Notification::new();
-            n.appname(APP_NAME)
-                .summary(&summary)
-                .body(&body)
-                .timeout(Timeout::Never)
-                // Transient: don't clutter the notification tray with dictation
-                // liveness once dismissed.
-                .hint(Hint::Transient(true))
-                // Normal (not Low): GNOME Shell suppresses the banner popup for
-                // low-urgency notifications and drops them straight into the
-                // tray — which is exactly the "no UI" symptom. Normal pops a
-                // banner; Critical for errors.
-                .urgency(if error {
-                    Urgency::Critical
-                } else {
-                    Urgency::Normal
-                });
-            if let Some(id) = id {
-                n.id(id); // replace the existing toast in place
+    /// Show or replace the lifecycle toast, returning its id.
+    async fn show(&self, text: &Text, critical: bool) -> Option<u32> {
+        match self
+            .toasts
+            .notify(self.live.as_ref().map_or(0, |(id, _)| *id), text, critical)
+            .await
+        {
+            Ok(id) => Some(id),
+            Err(e) => {
+                myna_core::info_log!("notify", "toast not shown: {e}");
+                None
             }
-            n.show().ok().map(|h| h.id())
-        })
-        .await
-        .ok()
-        .flatten()
-    }
-
-    /// Close the live toast, if any.
-    async fn close(&self) {
-        let Some(id) = self.id else { return };
-        let _ = tokio::task::spawn_blocking(move || close_toast(id)).await;
+        }
     }
 
     fn abort_pending(&mut self) {
@@ -120,27 +189,14 @@ impl NotifyIndicator {
         }
     }
 
-    fn schedule_auto_hide(&mut self, body: &str) {
+    fn schedule_auto_hide(&mut self, ms: u64) {
         self.abort_pending();
-        let ms = Self::hold_ms_for(body);
-        let id = self.id;
-        // Notifier-side timeout only: starts when shown, restarts on
-        // replacement, and with multiple Dictation clients the server does
-        // not drive idle.
-        let handle = tokio::spawn(async move {
+        let Some((id, _)) = self.live else { return };
+        let toasts = self.toasts.clone();
+        self.pending_hide = Some(tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-            if let Some(id) = id {
-                let _ = tokio::task::spawn_blocking(move || close_toast(id)).await;
-            }
-        });
-        self.pending_hide = Some(handle);
-    }
-}
-
-/// Re-address the existing toast by id, then close it. Blocking.
-fn close_toast(id: u32) {
-    if let Ok(handle) = Notification::new().appname(APP_NAME).id(id).show() {
-        handle.close();
+            toasts.close(id).await;
+        }));
     }
 }
 
@@ -159,11 +215,20 @@ impl Indicator for NotifyIndicator {
         );
         let is_error = matches!(&state, IndicatorState::Error { .. });
         match toast_text(&state) {
-            Some((summary, body)) => {
+            Some(text) => {
+                // Plasma refuses an identical Notify in quick succession. An
+                // error is sent again: the user may have closed the toast.
+                if !is_error && self.live.as_ref().is_some_and(|(_, t)| *t == text) {
+                    return;
+                }
                 self.abort_pending();
-                self.id = self.show(summary, body.clone(), is_error).await;
+                let hold = (self.hold_ms_for)(&text.1);
+                // A refused replacement leaves the old toast up: keep its id.
+                if let Some(id) = self.show(&text, is_error).await {
+                    self.live = Some((id, text));
+                }
                 if is_notice {
-                    self.schedule_auto_hide(&body);
+                    self.schedule_auto_hide(hold);
                 }
             }
             None => {
@@ -172,9 +237,9 @@ impl Indicator for NotifyIndicator {
                 if self.pending_hide.is_some() {
                     return;
                 }
-                self.abort_pending();
-                self.close().await;
-                self.id = None;
+                if let Some((id, _)) = self.live.take() {
+                    self.toasts.close(id).await;
+                }
             }
         }
     }
@@ -183,6 +248,140 @@ impl Indicator for NotifyIndicator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// A notification server that, like Plasma's, refuses a `Notify`
+    /// identical to the one just before it.
+    #[derive(Default)]
+    struct Server {
+        next_id: u32,
+        open: HashMap<u32, String>,
+        /// The summary of every `Notify`, refused or not, and `close <id>`.
+        calls: Vec<String>,
+        last: Option<Text>,
+        refuse_next: bool,
+    }
+
+    #[derive(Default)]
+    struct FakeToasts(Mutex<Server>);
+
+    #[async_trait]
+    impl Toasts for FakeToasts {
+        async fn notify(&self, replaces: u32, text: &Text, _: bool) -> zbus::Result<u32> {
+            let mut s = self.0.lock().unwrap();
+            s.calls.push(text.0.clone());
+            let identical = s.last.as_ref() == Some(text);
+            s.last = Some(text.clone());
+            if std::mem::take(&mut s.refuse_next) || identical {
+                return Err(zbus::Error::Failure("ExcessNotificationGeneration".into()));
+            }
+            let id = if s.open.contains_key(&replaces) {
+                replaces
+            } else {
+                s.next_id += 1;
+                s.next_id
+            };
+            s.open.insert(id, text.0.clone());
+            Ok(id)
+        }
+
+        async fn close(&self, id: u32) {
+            let mut s = self.0.lock().unwrap();
+            s.calls.push(format!("close {id}"));
+            s.open.remove(&id);
+        }
+    }
+
+    fn rig() -> (NotifyIndicator, Arc<FakeToasts>) {
+        let server = Arc::new(FakeToasts::default());
+        (NotifyIndicator::with(server.clone(), |_| 0), server)
+    }
+
+    fn calls(server: &FakeToasts) -> Vec<String> {
+        server.0.lock().unwrap().calls.clone()
+    }
+
+    fn open(server: &FakeToasts) -> Vec<String> {
+        server.0.lock().unwrap().open.values().cloned().collect()
+    }
+
+    #[tokio::test]
+    async fn one_toast_is_replaced_through_the_dictation_and_closed() {
+        let (mut indicator, server) = rig();
+        indicator.set_state(IndicatorState::Recording).await;
+        indicator.set_state(IndicatorState::Finalizing).await;
+        assert_eq!(open(&server), ["⏳ Dictation: finishing"]);
+        indicator.set_state(IndicatorState::Hidden).await;
+        assert_eq!(
+            calls(&server),
+            [
+                "🎤 Dictation: listening",
+                "⏳ Dictation: finishing",
+                "close 1"
+            ]
+        );
+        assert!(open(&server).is_empty());
+    }
+
+    /// #70: the controller publishes `Recording` again on `Loading` and
+    /// `Ready`; Plasma refused the copies and the first toast was orphaned.
+    #[tokio::test]
+    async fn a_repeated_state_sends_no_second_toast() {
+        let (mut indicator, server) = rig();
+        for _ in 0..3 {
+            indicator.set_state(IndicatorState::Recording).await;
+        }
+        indicator.set_state(IndicatorState::Finalizing).await;
+        indicator.set_state(IndicatorState::Hidden).await;
+        assert_eq!(
+            calls(&server),
+            [
+                "🎤 Dictation: listening",
+                "⏳ Dictation: finishing",
+                "close 1"
+            ]
+        );
+        assert!(open(&server).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_replacement_leaves_the_toast_closable() {
+        let (mut indicator, server) = rig();
+        indicator.set_state(IndicatorState::Recording).await;
+        server.0.lock().unwrap().refuse_next = true;
+        indicator.set_state(IndicatorState::Finalizing).await;
+        indicator.set_state(IndicatorState::Hidden).await;
+        assert!(open(&server).is_empty());
+    }
+
+    /// The user may have closed it since: a press that fails the same way
+    /// again must say so again.
+    #[tokio::test]
+    async fn a_repeated_error_is_sent_again() {
+        let (mut indicator, server) = rig();
+        indicator
+            .set_state(IndicatorState::critical("No text field focused"))
+            .await;
+        server.0.lock().unwrap().open.clear();
+        // Out of Plasma's quick succession.
+        server.0.lock().unwrap().last = None;
+        indicator
+            .set_state(IndicatorState::critical("No text field focused"))
+            .await;
+        assert_eq!(open(&server), ["⚠️ Dictation error"]);
+    }
+
+    #[tokio::test]
+    async fn a_notice_closes_itself_after_its_hold() {
+        let (mut indicator, server) = rig();
+        indicator
+            .set_state(IndicatorState::recoverable("No speech"))
+            .await;
+        indicator.set_state(IndicatorState::Hidden).await;
+        assert_eq!(open(&server), ["⚠️ Dictation error"], "held past idle");
+        indicator.pending_hide.take().unwrap().await.unwrap();
+        assert!(open(&server).is_empty());
+    }
 
     #[test]
     fn every_active_state_has_a_toast_and_hidden_closes() {

@@ -1,0 +1,199 @@
+# The four published snaps, built natively on an amd64 and an arm64 runner
+# (snapcraft does not cross-build), smoke-tested there with myna-bench on a few
+# LibriSpeech clips, and released. A release tag releases to edge; a manual run
+# can release to a branch such as edge/rc1 to try a candidate as a store
+# refresh before tagging it.
+#
+# Publishing needs the store-edge environment's SNAPCRAFT_STORE_CREDENTIALS
+# (snapcraft export-login scoped to these snaps), so it only happens in a
+# repository whose SNAP_PUBLISH variable is true. Elsewhere the tag still
+# builds and smoke-tests. A snap whose build or smoke fails uploads no
+# artifact, so its publish leg fails and the others go ahead.
+name: snaps
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Release the builds to CHANNEL
+        type: boolean
+        default: false
+      channel:
+        description: Channel to release to, e.g. edge or edge/rc1
+        type: string
+        default: edge
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        snap: [myna, parakeet, whisper, funasr]
+        include:
+          - snap: myna
+            name: myna
+          - snap: parakeet
+            name: myna-parakeet
+            fetch: cd parakeet-snap && ./dev/download-models.sh
+            model: parakeet-tdt-0.6b-v3
+            component: model-parakeet-int8
+          - snap: whisper
+            name: myna-whisper
+            fetch: cd whisper-snap && ./dev/download-models.sh
+            model: tiny
+            component: model-tiny
+          - snap: funasr
+            name: myna-funasr
+            fetch: uv run --no-project --with 'modelscope>=1.34' python dev/fetch_funasr_model.py --target ./funasr-snap/components/model-sensevoice-onnx
+            model: sensevoice
+            component: model-sensevoice
+    name: build (${{ matrix.snap }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 150
+    steps:
+      # Full history: dev/version.sh counts commits since the last tag.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # The model components and the snapcraft build instance outgrow the
+      # runner's free disk otherwise.
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Fetch models
+        if: matrix.fetch
+        run: |
+          [ ${{ matrix.snap }} != whisper ] || uv tool install 'huggingface_hub[cli]'
+          ${{ matrix.fetch }}
+
+      - name: Stage
+        run: ${{ matrix.snap }}-snap/dev/prepare.sh
+
+      - uses: snapcore/action-build@v1
+        id: build
+        with:
+          path: ${{ matrix.snap }}-snap
+
+      # The client needs a desktop session to do anything, so it is only
+      # installed; the backends transcribe real speech.
+      - name: Smoke (install)
+        if: ${{ !matrix.model }}
+        run: |
+          sudo snap set system experimental.user-daemons=true
+          sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
+          snap info --verbose ${{ matrix.name }} | sed -n '/^installed/p'
+
+      # psutil is compiled, so the pyz is built per architecture.
+      - name: Build myna-bench
+        if: matrix.model
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg python3-venv
+          dev/build-bench.sh
+
+      - uses: actions/cache@v6
+        if: matrix.model
+        with:
+          path: .cache/librispeech
+          key: librispeech-dev-clean
+
+      - name: Smoke (transcribe)
+        if: matrix.model
+        run: |
+          python3 myna-bench.pyz download-corpus --out corpus/smoke --select balanced -n 4
+          cat > smoke.yaml <<EOF
+          manifest: ./corpus/smoke/manifest.json
+          out: ./smoke.jsonl
+          sweep_budget_seconds: 900
+          targets:
+            - snap: ${{ matrix.name }}
+              files:
+                - ./${{ matrix.snap }}-snap/${{ matrix.name }}_*.snap
+                - ./${{ matrix.snap }}-snap/${{ matrix.name }}+${{ matrix.component }}.comp
+              models: [${{ matrix.model }}]
+          EOF
+          sudo python3 myna-bench.pyz run --config smoke.yaml --skip-env-check
+          python3 dev/check-smoke.py smoke.jsonl
+
+      - if: always() && matrix.model
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-${{ matrix.snap }}-${{ matrix.arch }}
+          retention-days: 14
+          path: smoke.jsonl
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: snap-${{ matrix.snap }}-${{ matrix.arch }}
+          retention-days: 14
+          path: |
+            ${{ matrix.snap }}-snap/*.snap
+            ${{ matrix.snap }}-snap/*.comp
+            ${{ matrix.snap }}-snap/version/version.metainfo.xml
+          if-no-files-found: error
+
+      # What a tester runs: dev/bench-edge.sh against the edge snaps.
+      - name: Tester bundle
+        if: matrix.snap == 'whisper'
+        run: |
+          mkdir -p bundle
+          cp myna-bench.pyz dev/bench-edge.sh dev/bench-edge.yaml bundle/
+      - if: matrix.snap == 'whisper'
+        uses: actions/upload-artifact@v7
+        with:
+          name: myna-bench-${{ matrix.arch }}
+          retention-days: 14
+          path: bundle/
+
+  publish:
+    needs: build
+    if: ${{ !cancelled() && vars.SNAP_PUBLISH == 'true' && (github.event_name == 'push' || inputs.publish) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        snap: [myna, parakeet, whisper, funasr]
+    name: publish (${{ matrix.snap }}, ${{ matrix.arch }})
+    # publish-snap.sh names the .snap after this runner's architecture.
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    environment: store-edge
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: snap-${{ matrix.snap }}-${{ matrix.arch }}
+          path: ${{ matrix.snap }}-snap
+      - name: Upload and release
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+          CHANNEL: ${{ inputs.channel || 'edge' }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y squashfs-tools
+          sudo snap install snapcraft --classic
+          dev/publish-snap.sh ${{ matrix.snap }}-snap "$CHANNEL"
+
+  # A candidate on a branch is tried as the upgrade users will get: the
+  # store's edge snaps refreshed to it, in the e2e VMs (e2e-tests/suites/upgrade.sh).
+  upgrade-e2e:
+    needs: publish
+    if: ${{ !cancelled() && needs.publish.result == 'success' && inputs.publish && !contains(fromJSON('["edge", "latest/edge"]'), inputs.channel) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel }}
+        run: gh workflow run e2e.yml -R "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f upgrade_channel="latest/${CHANNEL#latest/}"

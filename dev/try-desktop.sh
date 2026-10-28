@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A desktop VM running THIS tree's Myna, to try by hand (not a test).
 #
-# Usage: dev/try-desktop.sh --desktop xubuntu|gnome --release noble|resolute ACTION
+# Usage: dev/try-desktop.sh --desktop xubuntu|gnome|kde --release noble|resolute|stonking ACTION
 #   (or: make try-desktop DESKTOP=xubuntu RELEASE=noble ACTION=up)
 #
 #   up       create myna-try-<desktop>-<release> from the e2e VM's `installed`
@@ -251,14 +251,14 @@ echo "the HUD did not stop" >&2; exit 1'
     lxc config set "$TRY" user.myna-try.head "$HEAD_SHA"
 }
 
-# Restart the daemon and, on Xfce, the HUD host (GNOME loads a new shell
+# Restart the daemon and, on Xfce and Plasma, the HUD host (GNOME loads a new shell
 # extension only at the next login).
 restart_services() {
     # shellcheck disable=SC2016 # expands in the VM
     on_vm "$TRY" 'systemctl --user restart snap.myna.myna.service
 for _ in $(seq 20); do systemctl --user is-active --quiet snap.myna.myna.service && exit 0; sleep 1; done
 echo "daemon not active" >&2; exit 1'
-    if [ "$DESK" = xubuntu ]; then
+    if [ "$DESK" != gnome ]; then
         # shellcheck disable=SC2016 # expands in the VM
         on_vm "$TRY" 'pkill -x myna-hud-host || true; pkill -x myna-hud || true
 exe=$(sed -n "s/^Exec=//p" /etc/xdg/autostart/com.canonical.Myna.HudHost.desktop)

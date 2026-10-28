@@ -244,6 +244,12 @@ fn validate_apply(args: &[&str]) -> Result<(), String> {
             }
             Ok(())
         }
+        ["run", app, "prune-cache"] => {
+            if !is_modelctl_app(app) {
+                return Err(format!("invalid modelctl app {app}"));
+            }
+            Ok(())
+        }
         ["run", app, "use-model", model, tail @ ..] => {
             if !is_modelctl_app(app) {
                 return Err(format!("invalid modelctl app {app}"));
@@ -362,6 +368,7 @@ mod tests {
                 "--no-restart",
             ]),
             op(&["restart", "myna-whisper"]),
+            op(&["run", "myna-whisper.whisper", "prune-cache"]),
         ];
         assert_eq!(validate_plan(PlanKind::Apply, &plan), Ok(()));
     }
@@ -376,6 +383,14 @@ mod tests {
             op(&["set", "myna-whisper", "streaming=false"]),
             op(&["restart", "myna-whisper", "--reload"]),
             op(&["restart", "../etc"]),
+            op(&[
+                "run",
+                "myna-whisper.whisper",
+                "prune-cache",
+                "--engine",
+                "cpu",
+            ]),
+            op(&["run", "../etc", "prune-cache"]),
             op(&[
                 "run",
                 "myna-whisper.whisper",

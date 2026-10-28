@@ -4266,7 +4266,7 @@ fn probe_install_all(application: &adw::Application) -> Result<(), String> {
     println!("onboarding-install: the set-up connects the model it installs");
     extensions.holding.set(true);
     machine.download(None);
-    let extension_step = gettextrs::gettext("Enabling shell extension");
+    let extension_step = gettextrs::gettext("Setting up the dictation indicator");
     if !until(&|| installing_shown(&window, &extension_step))
         || extensions.enables.get() != 1
         || window.forward_button().is_sensitive()
@@ -4439,7 +4439,7 @@ fn probe_partial(application: &adw::Application) -> Result<(), String> {
     let reason = "gnome-shell could not run myna-shell@canonical.com: TypeError: boom";
     extensions.failing.replace(Some(reason.to_owned()));
     button.emit_clicked();
-    let heading = gettextrs::gettext("Enabling the shell extension failed");
+    let heading = gettextrs::gettext("Setting up the dictation indicator failed");
     if !until(&|| {
         toast_texts(&window) == [heading.clone(), gettextrs::gettext("Details")] && plain_offer()
     }) || extensions.enables.get() != 1

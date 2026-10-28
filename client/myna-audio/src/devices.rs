@@ -2,7 +2,7 @@
 //! 002-native-pipewire-backend, FR-008/FR-008a). Lists current PipeWire input
 //! sources and notifies an observer as devices appear/disappear, so a settings
 //! chooser stays current without polling. Read-only: no audio, nothing
-//! persisted (constitution Principle V).
+//! persisted.
 //!
 //! The stable `node.name` this yields is exactly what feeds
 //! `CaptureSpec.target` for selection — enumeration and selection tie together
@@ -31,7 +31,7 @@ pub struct InputDevice {
 /// [`watch`] channel — a settings chooser subscribes and re-renders on change,
 /// no polling. Dropping the handle stops the listener and releases the thread.
 ///
-/// Read-only: no audio is captured, nothing is persisted (Principle V).
+/// Read-only: no audio is captured, nothing is persisted.
 pub struct InputDevices {
     /// Latest snapshot; updated as devices appear/disappear.
     devices: watch::Receiver<Vec<InputDevice>>,

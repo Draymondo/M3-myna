@@ -19,9 +19,7 @@ use myna_config::adapters::snapd_client::{
 };
 use myna_config::adapters::system_configurator::PkexecSystemConfigurator;
 use myna_config::command::{CancellationToken, CommandOutput, FakeCommandRunner};
-use myna_config::domain::{
-    connection_snapshot, ActiveBackendState, BackendIdentity, ConnectionSnapshot,
-};
+use myna_config::domain::{connection_snapshot, ActiveBackendState, BackendIdentity};
 use myna_config::ports::{SystemConfigurator, SystemConfiguratorError};
 use myna_config::snap_changes::{ApplyProgress, ChangeInProgress};
 
@@ -627,81 +625,102 @@ fn timeout_message_reports_a_positive_elapsed_duration() {
 }
 
 #[test]
-fn backend_switch_requests_disconnect_connect_then_restarts_the_user_service() {
-    let fake = FakeSnapd::start(vec![
-        Step {
-            request_path_contains: "POST /v2/interfaces".into(),
-            response: http_body(
-                200,
-                "OK",
-                r#"{"type":"sync","status-code":200,"result":{}}"#,
-            ),
-            delay: None,
-            close_early: false,
-        },
-        Step {
-            request_path_contains: "POST /v2/interfaces".into(),
-            response: http_body(
-                200,
-                "OK",
-                r#"{"type":"sync","status-code":200,"result":{}}"#,
-            ),
-            delay: None,
-            close_early: false,
-        },
-    ]);
-    let client = Arc::new(fake.client());
-    let runner = Arc::new(FakeCommandRunner::scripted([Ok(CommandOutput::new(
-        Some(0),
-        "",
-        "",
-    ))]));
-    let adapter = PkexecSystemConfigurator::with_snapd_client(runner.clone(), client);
-    let snapshot = ConnectionSnapshot::new(
-        vec![
-            BackendIdentity::new("new", "provider"),
-            BackendIdentity::new("old", "provider"),
-        ],
-        ActiveBackendState::Connected(BackendIdentity::new("old", "provider")),
-    );
-    let plan = SwitchPlan::new(&snapshot, BackendIdentity::new("new", "provider")).unwrap();
-
-    let completed =
-        block_on(adapter.execute_backend_switch(&plan, CancellationToken::new())).unwrap();
-
-    assert_eq!(completed.len(), 3);
-    let calls = fake.calls.lock().unwrap().clone();
-    assert_eq!(calls.len(), 2);
-    assert!(calls[0].contains("POST /v2/interfaces HTTP/1.1"));
-    assert!(calls[0].contains(r#"{"action":"disconnect","plugs":[{"snap":"myna","plug":"backend"}],"slots":[{"snap":"old","slot":"provider"}]}"#));
-    assert!(calls[1].contains(r#"{"action":"connect","plugs":[{"snap":"myna","plug":"backend"}],"slots":[{"snap":"new","slot":"provider"}]}"#));
-    assert_eq!(runner.calls(), [myna_restart_request()]);
-}
-
-#[test]
-fn noop_backend_switch_makes_no_snapd_requests() {
-    let fake = FakeSnapd::start(Vec::new());
-    let client = Arc::new(
-        UnixSocketSnapdClient::with_socket(fake.path.clone()).with_timeouts(SnapdTimeouts {
-            per_request: Duration::from_millis(100),
-            authorization: Duration::from_millis(100),
-            poll_interval: Duration::from_millis(20),
-            total: Duration::from_millis(200),
-        }),
-    );
-    let adapter =
-        PkexecSystemConfigurator::with_snapd_client(Arc::new(FakeCommandRunner::default()), client);
-    let snapshot = ConnectionSnapshot::new(
-        vec![BackendIdentity::new("new", "provider")],
-        ActiveBackendState::Connected(BackendIdentity::new("new", "provider")),
-    );
-    let plan = SwitchPlan::new(&snapshot, BackendIdentity::new("new", "provider")).unwrap();
-
-    let completed =
-        block_on(adapter.execute_backend_switch(&plan, CancellationToken::new())).unwrap();
-
-    assert!(completed.is_empty());
-    assert!(fake.calls.lock().unwrap().is_empty());
+fn backend_switches_reach_snapd_and_restart_only_the_user_service() {
+    for (models, connected, selected) in [
+        (vec!["new"], vec![], "new"),
+        (vec!["new"], vec!["stray"], "new"),
+        (vec!["old", "new"], vec!["old"], "new"),
+        (vec!["old", "new", "third"], vec!["old", "new"], "third"),
+        (vec!["old", "new"], vec!["old", "new"], "new"),
+        (vec!["new"], vec!["new"], "new"),
+    ] {
+        let slots: Vec<_> = models
+            .iter()
+            .copied()
+            .chain(connected.iter().copied())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(|snap| serde_json::json!({
+                "snap": snap, "slot": "provider",
+                "attrs": {"content": "inference-provider",
+                          "task": if models.contains(&snap) { Some("speech-to-text") } else { None }},
+                "connections": if connected.contains(&snap) {
+                    serde_json::json!([{"snap": "myna", "plug": "backend"}])
+                } else { serde_json::json!([]) },
+            }))
+            .collect();
+        let snapshot = connection_snapshot(
+            &serde_json::from_value(serde_json::json!({"slots": slots})).unwrap(),
+        );
+        let noop = connected == [selected];
+        let requests: Vec<_> = if noop {
+            Vec::new()
+        } else {
+            connected
+                .iter()
+                .map(|snap| ("disconnect", *snap))
+                .chain([("connect", selected)])
+                .collect()
+        };
+        let fake = FakeSnapd::start(
+            requests
+                .iter()
+                .map(|_| Step {
+                    request_path_contains: "POST /v2/interfaces".into(),
+                    response: http_body(
+                        200,
+                        "OK",
+                        r#"{"type":"sync","status-code":200,"result":{}}"#,
+                    ),
+                    delay: None,
+                    close_early: false,
+                })
+                .collect(),
+        );
+        let runner = Arc::new(FakeCommandRunner::scripted([Ok(CommandOutput::new(
+            Some(0),
+            "",
+            "",
+        ))]));
+        let adapter =
+            PkexecSystemConfigurator::with_snapd_client(runner.clone(), Arc::new(fake.client()));
+        let plan = SwitchPlan::new(&snapshot, BackendIdentity::new(selected, "provider")).unwrap();
+        let completed =
+            block_on(adapter.execute_backend_switch(&plan, CancellationToken::new())).unwrap();
+        let mut actual: Vec<serde_json::Value> = fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|call| serde_json::from_str(call.split_once("\r\n\r\n").unwrap().1).unwrap())
+            .collect();
+        let mut expected: Vec<_> = requests
+            .iter()
+            .map(|(action, snap)| {
+                serde_json::json!({
+                    "action": action, "plugs": [{"snap": "myna", "plug": "backend"}],
+                    "slots": [{"snap": snap, "slot": "provider"}],
+                })
+            })
+            .collect();
+        assert_eq!(
+            actual.last(),
+            expected.last(),
+            "{connected:?} -> {selected}"
+        );
+        actual.sort_by_key(serde_json::Value::to_string);
+        expected.sort_by_key(serde_json::Value::to_string);
+        assert_eq!(actual, expected, "{connected:?} -> {selected}");
+        assert_eq!(completed.len(), requests.len() + usize::from(!noop));
+        assert_eq!(
+            runner.calls(),
+            if noop {
+                Vec::new()
+            } else {
+                vec![myna_restart_request()]
+            }
+        );
+    }
 }
 
 #[test]

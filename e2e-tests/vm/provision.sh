@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision a desktop LXD VM (GNOME, or Xubuntu with --desktop xubuntu) for
+# Provision a desktop LXD VM (GNOME, or --desktop xubuntu|kde) for
 # the Myna Settings e2e suites, from the release's Ubuntu cloud image. Ends
 # with the VM stopped and snapshots that mirror the states the suites
 # declare:
@@ -9,7 +9,8 @@
 #                    backend not connected
 #   installed        components-only plus myna-whisper (a second backend to
 #                    switch to), myna:backend connected to parakeet and the
-#                    daemon restarted
+#                    daemon restarted; on Plasma also IBus as KWin's input
+#                    method, as onboarding leaves it
 #   localized        installed plus the Swedish language pack, which
 #                    translates snap's own output, and the Simplified
 #                    Chinese one, whose speakers get another model
@@ -22,7 +23,7 @@
 # run-suite.sh copies one per suite and leaves the VM itself untouched;
 # reprovision on a new edge revision or a stale image with --force.
 #
-# Usage: provision.sh --release noble|resolute|stonking [--desktop gnome|xubuntu] [--force]
+# Usage: provision.sh --release noble|resolute|stonking [--desktop gnome|xubuntu|kde] [--force]
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -52,8 +53,11 @@ if ! lxc info "$VM" >/dev/null 2>&1; then
     lxc init "$(image "$RELEASE")" "$VM" --vm ${E2E_POOL:+-s "$E2E_POOL"} \
         -c limits.cpu=4 -c limits.memory="$E2E_VM_MEMORY" -d root,size=20GiB \
         -c cloud-init.user-data="$(user_data)"
-    lxc start "$VM"
-    # The display manager only starts from the next boot, the first stage's.
+fi
+# The display manager only starts from the next boot, the first stage's. A
+# run that died before that stage finishes the first boot here.
+if ! snapshots "$VM" | grep -qx bare; then
+    lxc start "$VM" 2>/dev/null || true
     wait_booted "$VM"
     # A suite's copy is a new instance to cloud-init, which would run the
     # whole user-data again.
@@ -84,11 +88,15 @@ stage components-only '
     sudo snap set system experimental.user-daemons=true
     sudo snap install --edge myna
     sudo snap install --edge myna-parakeet'
-stage installed '
+# What Settings runs to make IBus KWin's input method; Xfce and GNOME have one.
+IM_ON=''
+[ "$E2E_DESKTOP" != kde ] || IM_ON='timeout 60 ibus start --type kde-wayland'
+stage installed "
     sudo snap install --edge myna-whisper
     sudo snap connect myna:backend myna-parakeet:provider
     systemctl --user restart snap.myna.myna.service
-    systemctl --user is-active snap.myna.myna.service'
+    systemctl --user is-active snap.myna.myna.service
+    $IM_ON"
 stage localized '
     sudo apt-get update -q
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
@@ -142,6 +150,10 @@ context.modules = [
   }
 ]
 CONF
+    # Linger starts PipeWire before the login session, when RTKit grants it
+    # nothing, so its graph often ran SCHED_OTHER and dropped audio. The
+    # group makes it realtime through the rlimits PipeWire ships instead.
+    sudo usermod -aG pipewire ubuntu
     systemctl --user restart pipewire pipewire-pulse wireplumber
     sudo snap install --dangerous myna-fake-backend.snap
     rm myna-fake-backend.snap

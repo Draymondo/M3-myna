@@ -71,7 +71,7 @@ _TOKEN_RE = re.compile(f"\\s*(?:[{UNSPACED_CHARS}]|[^\\s{UNSPACED_CHARS}]+)")
 def _default_model_dir() -> str:
     """The ModelScope cache snapshot staged by ``dev/fetch_funasr_model.py``.
 
-    Offline by contract (constitution V): the adapter never downloads at
+    Offline by contract: the adapter never downloads at
     session time. ``funasr_onnx``'s own auto-download fallback is never
     exercised — it requires modelscope at runtime (not a server dep) and
     raises a bare string on failure, which is the TypeError seen when the

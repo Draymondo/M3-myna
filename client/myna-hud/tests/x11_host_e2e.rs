@@ -14,7 +14,7 @@ mod support;
 
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use x11rb::connection::Connection;
 use x11rb::protocol::shape::{ConnectionExt as _, SK};
@@ -26,56 +26,13 @@ use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
-use myna_hud::dbus_consumer::{BUS_NAME, OBJECT_PATH};
 use myna_platform::status_surface::{placement, Point, Rect, Size, BOTTOM_MARGIN};
-use support::{Headless, Hud, PrivateBus};
+use support::{dictation, wait_until, Headless, Hud, PrivateBus, WAIT};
 
 const SCREEN: Size = Size {
     width: 1024,
     height: 768,
 };
-const WAIT: Duration = Duration::from_secs(20);
-
-/// The publisher the HUD consumes, reduced to what it reads.
-struct Dictation {
-    state: String,
-}
-
-#[zbus::interface(name = "com.canonical.Myna.Dictation")]
-impl Dictation {
-    #[zbus(property)]
-    fn state(&self) -> String {
-        self.state.clone()
-    }
-    #[zbus(property)]
-    fn status_message(&self) -> String {
-        String::new()
-    }
-    #[zbus(property)]
-    fn audio_rms(&self) -> f64 {
-        0.0
-    }
-    #[zbus(property)]
-    fn audio_peak(&self) -> f64 {
-        0.0
-    }
-    #[zbus(property)]
-    fn hud_style(&self) -> String {
-        "bar".into()
-    }
-    fn register_client(&self) -> u32 {
-        1
-    }
-}
-
-fn set_state(connection: &zbus::blocking::Connection, state: &str) {
-    let iface = connection
-        .object_server()
-        .interface::<_, Dictation>(OBJECT_PATH)
-        .expect("served interface");
-    iface.get_mut().state = state.into();
-    zbus::block_on(iface.get().state_changed(iface.signal_emitter())).expect("emit State");
-}
 
 x11rb::atom_manager! {
     Atoms: AtomsCookie {
@@ -257,14 +214,6 @@ fn next_map(seen: &Receiver<Seen>, messages: &mut Vec<Seen>) -> AtMap {
     }
 }
 
-fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + WAIT;
-    while !done() {
-        assert!(Instant::now() < deadline, "timed out waiting until {what}");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 /// A panel window reserving `height` px along the bottom edge.
 fn set_panel(conn: &RustConnection, atoms: &Atoms, root: Window, panel: Window, height: u32) {
     let strut = [
@@ -389,19 +338,7 @@ fn the_hud_hosts_itself_on_x11() {
     .unwrap();
     set_panel(&conn, &atoms, root, panel, 40);
 
-    let publisher = zbus::blocking::connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .name(BUS_NAME)
-        .unwrap()
-        .serve_at(
-            OBJECT_PATH,
-            Dictation {
-                state: "recording".into(),
-            },
-        )
-        .unwrap()
-        .build()
-        .expect("publish com.canonical.Myna.Dictation");
+    let publisher = dictation::serve(&bus.address, "recording");
 
     let mut hud = Hud(Command::new(env!("CARGO_BIN_EXE_myna-hud"))
         .args(["--host", "x11"])
@@ -499,7 +436,7 @@ fn the_hud_hosts_itself_on_x11() {
     });
 
     // Idle unmaps; the next map is placed before it happens, again.
-    set_state(&publisher, "idle");
+    dictation::publish(&publisher, "idle", "");
     wait_until("idle unmaps the HUD", || {
         conn.get_window_attributes(first.window)
             .unwrap()
@@ -509,22 +446,14 @@ fn the_hud_hosts_itself_on_x11() {
             != MapState::VIEWABLE
     });
     set_panel(&conn, &atoms, root, panel, 60);
-    set_state(&publisher, "recording");
+    dictation::publish(&publisher, "recording", "");
     let second = next_map(&seen, &mut messages);
     assert_eq!(second.window, first.window);
     assert_eq!(second.position, expected(second.size, 60));
 
     // Stopped as its supervisor stops it, it leaves cleanly (and, under
     // coverage, writes its profile).
-    assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) }, 0);
-    let deadline = Instant::now() + WAIT;
-    let status = loop {
-        if let Some(status) = hud.0.try_wait().expect("try_wait") {
-            break status;
-        }
-        assert!(Instant::now() < deadline, "myna-hud ignored SIGTERM");
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let status = hud.terminate();
     assert_eq!(status.code(), Some(0), "myna-hud exited {status}");
 }
 
@@ -547,7 +476,7 @@ fn the_x11_host_refuses_a_wayland_session() {
 
     assert_eq!(output.status.code(), Some(78), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("needs an X11 session"), "{stderr}");
+    assert!(stderr.contains("needs a session of kind X11"), "{stderr}");
 }
 
 #[test]

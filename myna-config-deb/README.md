@@ -8,7 +8,7 @@ Besides the application it installs the GSettings schema the daemon reads,
 the desktop entry, icons and AppStream metainfo, the polkit action, and the
 myna-shell GNOME Shell extension
 (`/usr/share/gnome/gnome-shell/extensions/myna-shell@canonical.com`) and, for
-Xfce, `myna-hud-host` (`/usr/libexec/myna-config/`) with the autostart entry
+Xfce and Plasma, `myna-hud-host` (`/usr/libexec/myna-config/`) with the autostart entry
 `/etc/xdg/autostart/com.canonical.Myna.HudHost.desktop`.
 
 ## Build
@@ -28,8 +28,9 @@ a developer machine: the unshare chroot unpacks under `$TMPDIR` (default
 `--chroot-setup-commands='...'` is where a mirror or apt proxy for the chroot
 goes.
 
-`build-source.sh` reads HEAD, not the working tree. It stages a three-crate
-workspace (`myna-core`, `myna-platform`, `myna-config`, `client/data`), vendors the crates.io
+`build-source.sh` reads HEAD, not the working tree. It stages a four-crate
+workspace (`myna-core`, `myna-platform`, `myna-freedesktop`, `myna-config`,
+`client/data`), vendors the crates.io
 dependencies for the Ubuntu build targets, and writes a reproducible
 `.orig.tar.xz`. `debian/copyright` is generated from the vendored crates by
 `vendor-copyright.py`; `debian/copyright.in` is the hand-written header.

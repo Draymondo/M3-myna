@@ -51,6 +51,9 @@ const CAP_SURROUNDING_TEXT: u32 = 1 << 5;
 /// Served by ibus-engine-simple, which the headless daemon can spawn.
 const PRIOR_ENGINE: &str = "xkb:us::eng";
 
+/// Another input source, as the user picks one.
+const PICKED_ENGINE: &str = "xkb:fr::fra";
+
 /// The engine `IbusInjector` registers.
 const MYNA_ENGINE: &str = "myna-stt";
 
@@ -140,6 +143,40 @@ enum Seen {
     HidePreedit,
 }
 
+/// The header fields a case reads, from the message's own bytes. Not
+/// `Message::header`: ibus before 1.5.31 (noble ships 1.5.29) sends its
+/// broadcasts from `org.freedesktop.IBus`, a SENDER that is no unique name,
+/// and zbus 5.18 panics rebuilding a header that carries one.
+struct Head {
+    kind: zbus::message::Type,
+    path: Option<String>,
+    member: Option<String>,
+    reply_serial: Option<u32>,
+}
+
+impl Head {
+    fn of(msg: &zbus::Message) -> Self {
+        type Raw = (u8, u8, u8, u8, u32, u32, Vec<(u8, OwnedValue)>);
+        let ((.., fields), _): (Raw, usize) =
+            msg.data().deserialize().expect("a D-Bus message header");
+        let mut head = Self {
+            kind: msg.message_type(),
+            path: None,
+            member: None,
+            reply_serial: None,
+        };
+        for (code, value) in fields {
+            match (code, &*value) {
+                (1, Value::ObjectPath(path)) => head.path = Some(path.to_string()),
+                (3, Value::Str(member)) => head.member = Some(member.to_string()),
+                (5, Value::U32(serial)) => head.reply_serial = Some(*serial),
+                _ => {}
+            }
+        }
+        head
+    }
+}
+
 /// A focused IBus input context, as a text field in an application holds one.
 struct Field {
     conn: Connection,
@@ -149,11 +186,16 @@ struct Field {
 
 impl Field {
     async fn open(purpose: u32, hints: u32) -> Self {
-        let address = std::env::var("IBUS_ADDRESS").expect("IBUS_ADDRESS from dev/gated-tests.sh");
-        Self::open_at(&address, purpose, hints).await
+        Self::open_as("myna-ibus-hw", purpose, hints).await
     }
 
-    async fn open_at(address: &str, purpose: u32, hints: u32) -> Self {
+    /// A field whose context the daemon names `client` to the engine.
+    async fn open_as(client: &str, purpose: u32, hints: u32) -> Self {
+        let address = std::env::var("IBUS_ADDRESS").expect("IBUS_ADDRESS from dev/gated-tests.sh");
+        Self::open_at(&address, client, purpose, hints).await
+    }
+
+    async fn open_at(address: &str, client: &str, purpose: u32, hints: u32) -> Self {
         let conn = zbus::conn::Builder::address(address)
             .expect("parse IBUS_ADDRESS")
             .max_queued(1024)
@@ -168,7 +210,7 @@ impl Field {
                 IBUS_PATH,
                 Some(IBUS_SERVICE),
                 "CreateInputContext",
-                &("myna-ibus-hw",),
+                &(client,),
             )
             .await
             .expect("CreateInputContext")
@@ -251,9 +293,9 @@ impl Field {
         let changed = async move {
             while let Some(msg) = stream.next().await {
                 let msg = msg.expect("message from IBus");
-                let header = msg.header();
-                if header.message_type() == zbus::message::Type::Signal
-                    && header.member().map(|m| m.as_str()) == Some("GlobalEngineChanged")
+                let head = Head::of(&msg);
+                if head.kind == zbus::message::Type::Signal
+                    && head.member.as_deref() == Some("GlobalEngineChanged")
                     && msg.body().deserialize::<String>().ok().as_deref() == Some(engine)
                 {
                     return;
@@ -278,10 +320,10 @@ impl Field {
         let seen = async move {
             while let Some(msg) = stream.next().await {
                 let msg = msg.expect("message from IBus");
-                let header = msg.header();
-                if header.message_type() == zbus::message::Type::Signal
-                    && header.path().map(|p| p.as_str()) == Some(ic.as_str())
-                    && header.member().map(|m| m.as_str()) == Some(member)
+                let head = Head::of(&msg);
+                if head.kind == zbus::message::Type::Signal
+                    && head.path.as_deref() == Some(ic.as_str())
+                    && head.member.as_deref() == Some(member)
                 {
                     return;
                 }
@@ -294,19 +336,27 @@ impl Field {
     }
 
     async fn next(&mut self) -> Seen {
+        self.next_within(HANG_GUARD)
+            .await
+            .unwrap_or_else(|| panic!("nothing delivered to {} within {HANG_GUARD:?}", self.ic))
+    }
+
+    /// What the daemon delivers to this field next, if anything does within
+    /// `wait`.
+    async fn next_within(&mut self, wait: Duration) -> Option<Seen> {
         let ic = self.ic.clone();
         let stream = &mut self.stream;
         let seen = async move {
             while let Some(msg) = stream.next().await {
                 let msg = msg.expect("message from IBus");
-                let header = msg.header();
-                if header.message_type() != zbus::message::Type::Signal
-                    || header.path().map(|p| p.as_str()) != Some(ic.as_str())
+                let head = Head::of(&msg);
+                if head.kind != zbus::message::Type::Signal
+                    || head.path.as_deref() != Some(ic.as_str())
                 {
                     continue;
                 }
                 let body = msg.body();
-                match header.member().map(|m| m.as_str()) {
+                match head.member.as_deref() {
                     Some("CommitText") => {
                         let text: OwnedValue = body.deserialize().expect("CommitText (v)");
                         return Seen::Commit(ibus_text(text));
@@ -328,9 +378,7 @@ impl Field {
             }
             panic!("IBus closed the field's connection");
         };
-        tokio::time::timeout(HANG_GUARD, seen)
-            .await
-            .unwrap_or_else(|_| panic!("nothing delivered to {} within {HANG_GUARD:?}", self.ic))
+        tokio::time::timeout(wait, seen).await.ok()
     }
 
     /// Prove nothing reached the field since the last `next`: the sentinel
@@ -378,14 +426,14 @@ const RELEASE_MASK: u32 = 1 << 30;
 impl Field {
     /// Apply one message the daemon sent this field to `shown`.
     fn apply(&self, msg: &zbus::Message, shown: &mut Shown) {
-        let header = msg.header();
-        if header.message_type() != zbus::message::Type::Signal
-            || header.path().map(|p| p.as_str()) != Some(self.ic.as_str())
+        let head = Head::of(msg);
+        if head.kind != zbus::message::Type::Signal
+            || head.path.as_deref() != Some(self.ic.as_str())
         {
             return;
         }
         let body = msg.body();
-        match header.member().map(|m| m.as_str()) {
+        match head.member.as_deref() {
             Some("CommitText") => {
                 let text: OwnedValue = body.deserialize().expect("CommitText (v)");
                 shown.text.push_str(&ibus_text(text));
@@ -417,10 +465,10 @@ impl Field {
             )
             .await
             .expect("ProcessKeyEvent");
-        let call = reply.header().reply_serial();
+        let call = Head::of(&reply).reply_serial;
         let ours = |msg: &zbus::Message| {
-            msg.header().message_type() == zbus::message::Type::MethodReturn
-                && msg.header().reply_serial() == call
+            let head = Head::of(msg);
+            head.kind == zbus::message::Type::MethodReturn && head.reply_serial == call
         };
         loop {
             let msg = tokio::time::timeout(HANG_GUARD, self.stream.next())
@@ -582,13 +630,21 @@ async fn global_engine() -> Option<String> {
 }
 
 /// A focused field of the given content type, the prior engine global, and an
-/// injector that has not acquired yet.
+/// injector whose next acquire is a steady-state one. Each connection's first
+/// activation is not: ibus 1.5.29 focuses a newly registered engine with a
+/// plain `FocusIn` and names no context until focus moves, which the cases on
+/// a fresh daemon cover. So the injector acquires and releases once first.
 async fn session(purpose: u32, hints: u32) -> (Field, IbusInjector) {
-    let field = Field::open(purpose, hints).await;
+    let mut field = Field::open(purpose, hints).await;
     field.use_prior_engine().await;
-    let injector = IbusInjector::connect()
+    let mut injector = IbusInjector::connect()
         .await
         .expect("connect to IBus daemon");
+    if let Ok(target) = injector.acquire().await {
+        target.release().await;
+    }
+    assert_eq!(global_engine().await.as_deref(), Some(PRIOR_ENGINE));
+    field.forget_delivered();
     (field, injector)
 }
 
@@ -668,6 +724,91 @@ async fn ordinary_field_receives_preedit_and_commit() {
         Some(PRIOR_ENGINE),
         "release restores the prior engine"
     );
+    field.close().await;
+}
+
+/// 600 characters of numbered words, more than two XIM pieces' worth.
+/// IBus's Wayland input method, Plasma's, types every key an engine declines
+/// through the global engine's layout, so a named one replaced the user's for
+/// as long as a dictation ran.
+#[tokio::test]
+async fn the_engine_leaves_the_keyboard_layout_to_the_user() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let (field, mut injector) = session(0, 0).await;
+    let target = injector.acquire().await.expect("acquire an ordinary field");
+
+    let reply = field
+        .conn
+        .call_method(
+            Some(IBUS_SERVICE),
+            IBUS_PATH,
+            Some(IBUS_SERVICE),
+            "GetGlobalEngine",
+            &(),
+        )
+        .await
+        .expect("GetGlobalEngine");
+    let desc = Value::from(reply.body().deserialize::<OwnedValue>().expect("an engine"));
+    let Value::Structure(desc) = desc else {
+        panic!("not an IBusEngineDesc: {desc:?}");
+    };
+    assert_eq!(desc.fields().get(2), Some(&Value::from(MYNA_ENGINE)));
+    assert_eq!(desc.fields().get(9), Some(&Value::from("default")));
+    target.release().await;
+}
+
+fn long_text() -> String {
+    (1..=120).map(|i| format!("w{i:03} ")).collect()
+}
+
+/// #73: an XIM client's long commit arrives in pieces a Windows application
+/// under Wine reads whole, each ending between words.
+#[tokio::test]
+async fn a_long_commit_reaches_an_xim_field_in_pieces() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let mut field = Field::open_as("xim", 0, 0).await;
+    field.use_prior_engine().await;
+    let mut injector = IbusInjector::connect()
+        .await
+        .expect("connect to IBus daemon");
+    let mut target = injector.acquire().await.expect("acquire the XIM field");
+
+    let text = long_text();
+    target.commit(&text).await.expect("commit the long text");
+    let mut pieces: Vec<String> = Vec::new();
+    while pieces.concat().len() < text.len() {
+        match field.next().await {
+            Seen::Commit(piece) => pieces.push(piece),
+            other => panic!("expected a commit piece, got {other:?}"),
+        }
+    }
+    assert_eq!(pieces.concat(), text);
+    assert_eq!(pieces.len(), 3, "{pieces:?}");
+    assert!(pieces.iter().all(|p| p.encode_utf16().count() <= 255));
+    assert!(pieces.iter().all(|p| p.ends_with(' ')), "{pieces:?}");
+    field.expect_only_sentinel(target.as_mut()).await;
+
+    target.release().await;
+    field.close().await;
+}
+
+/// Any other field gets the long commit as one: on GNOME Wayland mutter keeps
+/// only the last of back-to-back commits.
+#[tokio::test]
+async fn a_long_commit_reaches_any_other_field_whole() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let (mut field, mut injector) = session(0, 0).await;
+    let mut target = injector.acquire().await.expect("acquire an ordinary field");
+
+    let text = long_text();
+    target.commit(&text).await.expect("commit the long text");
+    assert_eq!(field.next().await, Seen::Commit(text));
+    field.expect_only_sentinel(target.as_mut()).await;
+
+    target.release().await;
     field.close().await;
 }
 
@@ -859,7 +1000,7 @@ async fn the_first_activation_on_a_fresh_daemon_reaches_the_field() {
     skip_unless_ibus!();
     let _serial = exclusive().await;
     let daemon = FreshDaemon::start().await;
-    let mut field = Field::open_at(&daemon.address, 0, 0).await;
+    let mut field = Field::open_at(&daemon.address, "myna-ibus-hw", 0, 0).await;
     // The grab: focus leaves the field for the daemon's fake context.
     field.focus_out().await;
     let address = daemon.address.as_str().try_into().expect("address");
@@ -1303,4 +1444,222 @@ async fn ibus_preedit_visual_probe() {
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     target.release().await;
     eprintln!("probe done — was the preedit visible and underlined?");
+}
+
+/// The first acquire after ibus-daemon starts, as after every restart. The
+/// daemon calls `CreateEngine` within the `SetGlobalEngine` round trip; an
+/// object server not yet listening drops it, and the daemon fails the switch
+/// after 15 s. Lost a few times in 60 on a loaded machine.
+#[tokio::test]
+async fn the_first_acquire_on_a_fresh_daemon_is_answered() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let mut hung = 0;
+    for _ in 0..40 {
+        let daemon = FreshDaemon::start().await;
+        let field = Field::open_at(&daemon.address, "myna-ibus-hw", 0, 0).await;
+        let address = daemon.address.as_str().try_into().expect("address");
+        let mut injector = IbusInjector::connect_to(address)
+            .await
+            .expect("connect to the fresh daemon");
+        match tokio::time::timeout(HANG_GUARD, injector.acquire()).await {
+            Ok(acquired) => acquired.expect("acquire a plain field").release().await,
+            Err(_) => hung += 1,
+        }
+        field.close().await;
+    }
+    assert_eq!(hung, 0, "first acquires on a fresh daemon that hung");
+}
+
+/// Make `engine` global from a connection of the field's own, as GNOME Shell
+/// does when it re-applies the user's input source after IBus restarts, or
+/// when the user picks another source.
+async fn shell_sets_global_engine(conn: &Connection, engine: &str) -> zbus::Result<()> {
+    conn.call_method(
+        Some(IBUS_SERVICE),
+        IBUS_PATH,
+        Some(IBUS_SERVICE),
+        "SetGlobalEngine",
+        &(engine,),
+    )
+    .await
+    .map(drop)
+}
+
+/// The Shell re-applying the input source just after the first press on a
+/// fresh daemon, as it does after every IBus restart. Whichever switch wins,
+/// the press acquires and its text reaches the field: the acquire claims the
+/// engine back once rather than failing the press, or committing into
+/// nowhere. The release hands the Shell's source back, unless the Shell's
+/// switch landed between the acquire reading the global engine and switching:
+/// then the switch displaced an engine it never learnt of, and ours stays.
+#[tokio::test]
+async fn an_engine_taken_while_acquiring_is_claimed_back() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let mut failed = Vec::new();
+    for trial in 0..40u64 {
+        let daemon = FreshDaemon::start().await;
+        let mut field = Field::open_at(&daemon.address, "myna-ibus-hw", 0, 0).await;
+        let address = daemon.address.as_str().try_into().expect("address");
+        let mut injector = IbusInjector::connect_to(address)
+            .await
+            .expect("connect to the fresh daemon");
+        let shell = async {
+            tokio::time::sleep(Duration::from_millis(trial)).await;
+            let _ = shell_sets_global_engine(&field.conn, PRIOR_ENGINE).await;
+        };
+        let (acquired, ()) = tokio::join!(
+            async { tokio::time::timeout(HANG_GUARD, injector.acquire()).await },
+            shell
+        );
+        let Ok(Ok(mut target)) = acquired else {
+            eprintln!("trial {trial}: acquire {acquired:?}");
+            failed.push(trial);
+            field.close().await;
+            continue;
+        };
+        let committed = target.commit("kept").await;
+        let seen = field.next_within(NOTICE).await;
+        target.release().await;
+        let restored = injector.global_engine().await;
+        eprintln!("trial {trial}: commit {committed:?}, field saw {seen:?}, then {restored:?}");
+        if committed.is_err()
+            || seen != Some(Seen::Commit("kept".into()))
+            || !matches!(restored.as_deref(), Some(PRIOR_ENGINE | MYNA_ENGINE))
+        {
+            failed.push(trial);
+        }
+        field.close().await;
+    }
+    assert!(
+        failed.is_empty(),
+        "presses that did not reach the field, by shell delay in ms: {failed:?}"
+    );
+}
+
+/// Acquire while a rival makes `PICKED_ENGINE` global each time ours becomes
+/// global, `takes` times. The injector is handed back alive: the daemon
+/// clears the global engine when its connection closes.
+async fn acquire_against_a_rival(
+    takes: usize,
+) -> (Result<Box<dyn Target>, InjectError>, Field, IbusInjector) {
+    let (mut field, mut injector) = session(0, 0).await;
+    field.watch_global_engine().await;
+    let rival = async {
+        for _ in 0..takes {
+            field.wait_global_engine(MYNA_ENGINE).await;
+            shell_sets_global_engine(&field.conn, PICKED_ENGINE)
+                .await
+                .expect("the rival's switch");
+        }
+    };
+    let (acquired, ()) = tokio::join!(
+        async {
+            tokio::time::timeout(HANG_GUARD, injector.acquire())
+                .await
+                .expect("acquire within the hang guard")
+        },
+        rival
+    );
+    field.forget_delivered();
+    (acquired, field, injector)
+}
+
+/// Another source picked over the switch, as the user may just after the
+/// press: the acquire claims the engine back, and the release restores that
+/// source, the latest one, not the one before the press.
+#[tokio::test]
+async fn an_engine_taken_once_while_acquiring_is_claimed_back_and_restored() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let (acquired, mut field, _injector) = acquire_against_a_rival(1).await;
+    let mut target = acquired.expect("claimed back");
+    target.commit("kept").await.expect("commit");
+    assert_eq!(field.next().await, Seen::Commit("kept".into()));
+    target.release().await;
+    assert_eq!(global_engine().await.as_deref(), Some(PICKED_ENGINE));
+    field.close().await;
+}
+
+/// An engine that takes the global one back from every switch: the acquire
+/// claims it back once, then gives the press up as `FocusLost` and leaves
+/// that engine global, rather than fighting it.
+#[tokio::test]
+async fn an_engine_that_takes_it_twice_wins() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let (acquired, field, _injector) = acquire_against_a_rival(2).await;
+    assert!(
+        matches!(acquired, Err(InjectError::FocusLost)),
+        "claimed back once, then refused: {acquired:?}"
+    );
+    assert_eq!(global_engine().await.as_deref(), Some(PICKED_ENGINE));
+    field.close().await;
+}
+
+/// The daemon's broadcasts never reach the injector's connection. Before
+/// 1.5.31 ibus-daemon sends them from `org.freedesktop.IBus`, no unique name,
+/// and zbus 5.18 panics on that sender in the task that reads the connection,
+/// once any match rule is registered on it, as its object server's is: a
+/// signal subscription there would leave every later call unanswered.
+#[tokio::test]
+async fn the_injector_outlives_the_daemons_broadcasts() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let field = Field::open(0, 0).await;
+    let mut injector = IbusInjector::connect()
+        .await
+        .expect("connect to IBus daemon");
+    for engine in [PICKED_ENGINE, PRIOR_ENGINE, PICKED_ENGINE, PRIOR_ENGINE] {
+        shell_sets_global_engine(&field.conn, engine)
+            .await
+            .expect("a switch, which the daemon broadcasts");
+    }
+    let asked = tokio::time::timeout(HANG_GUARD, injector.global_engine()).await;
+    assert_eq!(asked, Ok(Some(PRIOR_ENGINE.to_string())));
+    let target = tokio::time::timeout(HANG_GUARD, injector.acquire())
+        .await
+        .expect("acquire answered")
+        .expect("acquire");
+    target.release().await;
+    field.close().await;
+}
+
+/// The user picks another input source mid-dictation. The next commit ends
+/// the dictation instead of being held as through a focus blip, and the
+/// release leaves the user's choice alone rather than switching back to the
+/// engine the dictation displaced.
+#[tokio::test]
+async fn an_input_source_picked_mid_dictation_ends_it_and_is_kept() {
+    skip_unless_ibus!();
+    let _serial = exclusive().await;
+    let (mut field, mut injector) = session(0, 0).await;
+    let mut target = injector.acquire().await.expect("acquire an ordinary field");
+    let mut events = target.focus_events();
+    target
+        .commit("before")
+        .await
+        .expect("commit before the switch");
+    assert_eq!(field.next().await, Seen::Commit("before".into()));
+
+    shell_sets_global_engine(&field.conn, PICKED_ENGINE)
+        .await
+        .expect("the user's switch");
+    assert!(
+        matches!(target.commit("after").await, Err(InjectError::FocusLost)),
+        "a commit after the switch is refused, not held through a blip"
+    );
+    assert_eq!(
+        events.next().now_or_never(),
+        Some(Some(FocusEvent::FocusOut)),
+        "the refusal ends the dictation"
+    );
+    target.release().await;
+    assert_eq!(
+        global_engine().await.as_deref(),
+        Some(PICKED_ENGINE),
+        "the release switched the user's input source back"
+    );
+    field.close().await;
 }

@@ -48,7 +48,6 @@ exclude:
     - dev
     - extensions
     - .claude
-    - .specify
     - .pi
     - .ruff_cache
     # Local caches and reference checkouts: HF dataset caches, the locally

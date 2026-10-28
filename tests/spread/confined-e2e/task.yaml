@@ -1,7 +1,6 @@
 # Confined end-to-end dictation (feature 006, FR-015): client snap + fake
 # backend snap connected over the inference-provider content share, WAV-driven
-# dictation, transcript asserted. No microphone, no model, no GPU
-# (constitution II).
+# dictation, transcript asserted. No microphone, no model, no GPU.
 summary: Install myna + fake backend snaps, connect, dictate a WAV clip
 
 prepare: |
@@ -39,7 +38,7 @@ execute: |
     # The resolver finds the socket only through provider.env.
     grep -qx 'UNIX_SOCKET=myna.sock' /var/snap/myna-fake-backend/common/share/provider/provider.env
 
-    # Virtual audio source, not a microphone (constitution II): the clip is
+    # Virtual audio source, not a microphone: the clip is
     # pushed as a WAV file; the fake adapter ignores content and returns its
     # scripted transcript. Confined, myna.testbed cannot read the spread
     # project dir (home plug covers neither it nor /root), so stage the

@@ -1,0 +1,18 @@
+#!/bin/bash
+# apt-get, retried while the archive fails to serve a file. apt itself does not
+# retry a 5xx whatever Acquire::Retries says, and snapshot.ubuntu.com has
+# answered them for minutes on end. Any other failure is returned at once.
+set -uo pipefail
+log=$(mktemp)
+trap 'rm -f "$log"' EXIT
+for delay in 15 30 60 120 240 0; do
+    apt-get -o APT::Update::Error-Mode=any "$@" 2>&1 | tee "$log"
+    status=${PIPESTATUS[0]}
+    if [ "$status" -eq 0 ] || ! grep -q '^[EW]: Failed to fetch' "$log"; then
+        exit "$status"
+    fi
+    [ "$delay" -eq 0 ] && break
+    echo "apt-retry: fetch failed, retrying in ${delay}s" >&2
+    sleep "$delay"
+done
+exit "$status"

@@ -1,23 +1,34 @@
 # Myna Settings and dictation end-to-end: the real binary, built on the GTK
-# 4.14 floor in the myna-noble workshop, driven through AT-SPI on fresh GNOME
-# and Xubuntu (Xfce on X11) desktop LXD VMs (e2e-tests/), against the myna snap
-# built from this tree and the store's latest/edge backends. Provisioned from
-# scratch every run, so a regression in the edge snaps shows here too.
+# 4.14 floor in the myna-noble workshop, driven through AT-SPI on fresh GNOME,
+# Xubuntu (Xfce on X11) and Kubuntu (Plasma 6 on Wayland) desktop LXD VMs
+# (e2e-tests/), against the myna snap built from this tree and the store's
+# latest/edge backends. Provisioned from scratch every run, so a regression in
+# the edge snaps shows here too.
 # Blocking, on pull requests and nightly: GNOME on every supported release
-# (noble, resolute and the devel series stonking) and Xubuntu on noble. Nobody
-# daily-drives Xfce here, so this is what catches its regressions.
-# Nightly, the Xubuntu screenshots are laid beside the last green nightly's in
-# a contact sheet (the `contact-sheet` job); see e2e-tests/AGENTS.md.
+# (noble, resolute and the devel series stonking), Xubuntu on noble and
+# Kubuntu on resolute. Nobody daily-drives Xfce or Plasma here, so this is
+# what catches their regressions. Kubuntu on stonking runs nightly only.
+# Nightly, the Xubuntu and Kubuntu screenshots are laid beside the last green
+# nightly's in a contact sheet (the `contact-sheet` job); see
+# e2e-tests/AGENTS.md.
+# A run dispatched with upgrade_channel (snaps.yml does, after releasing a
+# candidate) runs only the upgrade suite: the store's edge snaps refreshed to
+# that channel.
 name: E2E
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}-${{ inputs.upgrade_channel }}
   cancel-in-progress: true
 
 on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      upgrade_channel:
+        description: Run only the upgrade suite, refreshing to this channel (e.g. latest/edge/rc1)
+        type: string
+        default: ""
   pull_request:
 
 jobs:
@@ -109,12 +120,15 @@ jobs:
       fail-fast: false
       matrix:
         release: ["noble", "resolute", "stonking"]
-        desktop: ["gnome", "xubuntu"]
+        desktop: ["gnome", "xubuntu", "kde"]
         exclude:
           - { desktop: xubuntu, release: resolute }
           - { desktop: xubuntu, release: stonking }
+          # Noble's Plasma 5 is not supported.
+          - { desktop: kde, release: noble }
+          - { desktop: kde, release: "${{ github.event_name == 'pull_request' && 'stonking' || 'none' }}" }
     # GNOME keeps its release-only names (artifacts, the contact sheet); the
-    # Xubuntu job is "e2e (xubuntu, noble)".
+    # others are "e2e (xubuntu, noble)" and so on.
     name: ${{ matrix.desktop == 'gnome' && format('e2e ({0})', matrix.release) || format('e2e ({0}, {1})', matrix.desktop, matrix.release) }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -150,9 +164,11 @@ jobs:
       - run: lxc storage create e2e btrfs size=60GiB
       - run: |
           E2E_MYNA_SNAP=$(ls "$PWD"/myna-snap/myna_*_amd64.snap) \
-            make e2e E2E_RELEASE=${{ matrix.release }} E2E_DESKTOP=${{ matrix.desktop }}
+            make e2e E2E_RELEASE=${{ matrix.release }} E2E_DESKTOP=${{ matrix.desktop }} \
+              ${{ inputs.upgrade_channel && 'SUITES=upgrade' || '' }}
         env:
           E2E_POOL: e2e
+          E2E_UPGRADE_CHANNEL: ${{ inputs.upgrade_channel }}
       - if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -187,13 +203,17 @@ jobs:
           [ "$CHANGES" = success ] || exit 1
           [ "$RUN" = false ] || [ "$E2E" = success ]
 
-  # Nightly (and on dispatch): the Xubuntu screenshots of this run beside the
-  # last approved run's. "Approved" is the newest green scheduled or dispatched
-  # run on main that kept its screenshots; re-baselining is dispatching E2E on
-  # main. Nothing is asserted here: the page is for a human.
+  # Nightly (and on dispatch): the Xubuntu and Kubuntu screenshots of this run
+  # beside the last approved run's. "Approved" is the newest green scheduled or
+  # dispatched run on main that kept its screenshots; re-baselining is
+  # dispatching E2E on main. Nothing is asserted here: the page is for a human.
   contact-sheet:
-    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && !inputs.upgrade_channel }}
     needs: e2e
+    strategy:
+      fail-fast: false
+      matrix:
+        set: ["xubuntu-noble", "kde-resolute"]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -201,7 +221,8 @@ jobs:
       actions: read
     env:
       GH_TOKEN: ${{ github.token }}
-      NAME: screenshots-xubuntu-noble
+      SET: ${{ matrix.set }}
+      NAME: screenshots-${{ matrix.set }}
     steps:
       - uses: actions/checkout@v6
       - run: python3 -I e2e-tests/tools/test_contact_sheet.py
@@ -228,9 +249,9 @@ jobs:
         run: |
           mkdir -p current sheet
           python3 -I e2e-tests/tools/contact-sheet.py --current current --baseline baseline \
-            --out sheet/index.html --title "Xubuntu noble: run $GITHUB_RUN_ID vs the last approved run" | tee -a "$GITHUB_STEP_SUMMARY"
+            --out sheet/index.html --title "$SET: run $GITHUB_RUN_ID vs the last approved run" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
-          name: contact-sheet-xubuntu-noble
+          name: contact-sheet-${{ matrix.set }}
           retention-days: 14
           path: sheet/index.html

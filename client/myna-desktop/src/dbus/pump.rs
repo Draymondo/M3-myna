@@ -4,8 +4,8 @@
 //! cadence while a session is active, zeroing them when it ends.
 //!
 //! It only *reads* the existing stats watch and emits — no new work on the
-//! capture thread (P8), and it carries energy only, never samples or content
-//! (constitution V). Throttled so the bus and the extension's repaint stay
+//! capture thread (P8), and it carries energy only, never samples or content.
+//! Throttled so the bus and the extension's repaint stay
 //! cheap; the extension applies its own stale-decay on top (research R5).
 
 use std::time::Duration;

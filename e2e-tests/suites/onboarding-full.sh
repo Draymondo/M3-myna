@@ -4,13 +4,17 @@
 # components (snapd flag, Dictation app, model; polkit allowed) -> How to
 # dictate -> Done closes the app. Afterwards the machine must be exactly
 # what onboarding promises: flag on, snaps installed, backend connected,
-# daemon active, shortcut set.
+# daemon active, shortcut set. On Xfce and Plasma the myna-config deb has
+# just been installed, so the indicator's host is not running yet: the run
+# starts it (issue #79).
 set -uo pipefail
 # shellcheck source=e2e-tests/suites/lib.sh
 source "$(dirname "$0")/lib.sh"
 
 P=onboarding-$REL
 S=shots/onboarding-full
+
+install_hud_host_entry
 
 shot --polkit allow --monitor "$P" \
     "waitfor:Next@$BTN" shot:$S/01-welcome.png \
@@ -34,4 +38,5 @@ assert_on "dictation daemon active" \
     'systemctl --user is-active -q snap.myna.myna.service'
 assert_shortcut_bound
 assert_input_method_up
+assert_hud_host_up
 suite_status

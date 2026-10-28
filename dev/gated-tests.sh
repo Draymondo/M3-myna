@@ -304,7 +304,7 @@ PIDS+=("$WIREPLUMBER_PID")
 wait_for 100 virtual_mic_in_graph ||
     fail "wireplumber never published $VIRTUAL_MIC in the private graph" \
         "(started here as: wireplumber, config in $XDG_CONFIG_HOME)"
-audio_is_flowing ||
+wait_for 3 audio_is_flowing ||
     fail "the private PipeWire graph carries no audio;" \
         "pipewire_hw would assert against silence"
 export MYNA_PIPEWIRE_TESTS=1

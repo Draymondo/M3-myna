@@ -91,25 +91,6 @@ ALLOWED: tuple[Allowed, ...] = (
         "GTK before f4206d04 takes a snap for unsandboxed and registers it with"
         " the portal, ignoring the error",
     ),
-    Allowed(
-        {
-            "subject": r"snap\.myna\.myna",
-            "operation": "dbus_method_call",
-            "bus": "system",
-            "path": r"/org/freedesktop/RealtimeKit1",
-        },
-        "not harmless: module-rt falls back to RealtimeKit when the portal is not"
-        " running yet, and capture loses realtime (myna#76)",
-    ),
-    # Delete once the store's edge snaps are built from 5dae45b8 or later.
-    Allowed(
-        {
-            "subject": r"snap\.myna-(whisper|parakeet|funasr)\.hook\..+",
-            "operation": "capable",
-            "capname": "dac_override",
-        },
-        "hooks from before 5dae45b8 log through >(...), opening /dev/fd/N with O_CREAT",
-    ),
 )
 
 

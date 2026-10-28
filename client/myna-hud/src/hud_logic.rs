@@ -3,8 +3,7 @@
 //! contracts RC19–RC21). No GTK imports — unit-tested headless
 //! by [`tests/hud_logic.rs`], the same split `states`/`vumeter` already
 //! establish between the *stable* pure layer and the *experimental*
-//! toolkit-dependent window ([`crate::window"], harness-tier — see plan.md
-//! Constitution Check). The window owns all pixels; this module only decides
+//! toolkit-dependent window ([`crate::window"], harness-tier). The window owns all pixels; this module only decides
 //! icon choice, colour class, ribbon phase, and auto-dismiss behavior.
 //!
 //! The pill's positioning is not logic anymore: on GNOME the extension host
